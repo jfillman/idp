@@ -21,6 +21,16 @@ spec:
       containers:
         - name: podinfo
           image: ghcr.io/stefanprodan/podinfo:6.7.0
+          # Pinned explicitly so that GitOps reconciliation always
+          # reasserts the correct entrypoint. An out-of-band edit on
+          # 2026-07-28 overrode this to an invalid path + flag
+          # ("/podinfo --this-flag-does-not-exist"), crash-looping every
+          # canary pod. Declaring the field here (instead of leaving it
+          # unset) means the next apply/reconcile will overwrite any
+          # future direct edit of this field rather than leaving it in
+          # place.
+          command:
+            - ./podinfo
           ports:
             - name: http
               containerPort: 9898
