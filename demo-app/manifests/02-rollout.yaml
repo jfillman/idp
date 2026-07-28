@@ -21,6 +21,16 @@ spec:
       containers:
         - name: podinfo
           image: ghcr.io/stefanprodan/podinfo:6.7.0
+          # Explicitly pin the entrypoint to the image's documented default
+          # (stefanprodan/podinfo Dockerfile: ENTRYPOINT ["./podinfo"]).
+          # Declaring it here -- instead of leaving `command` unset -- means
+          # the next GitOps reconcile/apply of this manifest will always
+          # overwrite any out-of-band `command` edit made directly against
+          # the live Rollout object. That is exactly how this incident's
+          # bad `command: ["/podinfo", "--this-flag-does-not-exist"]` was
+          # able to reach the live object without ever appearing in this
+          # file or in `kubectl.kubernetes.io/last-applied-configuration`.
+          command: ["./podinfo"]
           ports:
             - name: http
               containerPort: 9898
