@@ -1,0 +1,13 @@
+diff --git a/app.py b/app.py
+index bacca05..bd50a35 100644
+--- a/app.py
++++ b/app.py
+@@ -49,7 +49,7 @@ def calculate_total(item_count, unit_price):
+     """Core business logic: total price for an order, with a bulk discount
+     applied above 10 items. This is THE function break-demo-src-bug.sh
+     introduces a bug into."""
+-    if item_count > MAX_ITEMS_PER_ORDER:
++    if item_count >= MAX_ITEMS_PER_ORDER:
+         raise ValueError(f"order of {item_count} exceeds max items ({MAX_ITEMS_PER_ORDER})")
+     subtotal = item_count * unit_price
+     if FEATURE_BULK_DISCOUNT and item_count >= 10:
