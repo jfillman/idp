@@ -30,7 +30,7 @@ spec:
   parameters:
     image:
       repository: localhost/widget-api
-      tag: "1.0.0"
+      tag: "1.0.0-broken"  # <-- intentionally broken for demo
     replicas: 4
     port: 8080
     config:
