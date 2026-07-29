@@ -30,7 +30,7 @@ spec:
   parameters:
     image:
       repository: localhost/widget-api
-      tag: "1.0.0"
+      tag: "1.0.1-buggy"
     replicas: 4
     port: 8080
     config:
