@@ -31,7 +31,7 @@ spec:
     image:
       repository: localhost/widget-api
       tag: "1.0.0"
-    replicas: 4
+    replicas: 2
     port: 8080
     config:
       maxItemsPerOrder: "100"
