@@ -1,7 +1,7 @@
 apiVersion: apps.example.org/v1alpha1
 kind: Application
 metadata:
-  name: widget-api
+  name: podinfo
   namespace: demo-apps
   annotations:
     # Per-XR overrides for the diagnosis agent's fix PR. The actual fix
@@ -15,28 +15,13 @@ metadata:
     gitops.example.org/owner: "jfillman"
     gitops.example.org/repo: "idp"
     gitops.example.org/base-branch: "main"
-    #
-    # SOURCE CODE location (for the source-bug scenario's fix PR).
-    # Unset src.example.org/owner + src.example.org/repo default to the
-    # same repo as gitops.example.org above (monorepo) — set path so the
-    # agent has a hint where to look:
-    src.example.org/path: "widget-api/app.py"
-    # Uncomment if the app's source actually lives in a different repo
-    # than the GitOps manifests (polyrepo):
-    src.example.org/owner: "jfillman"
-    src.example.org/repo: "idp"
-    src.example.org/base-branch: "main"
 spec:
   parameters:
     image:
-      repository: widget-api
-      tag: "1.0.0"
+      repository: ghcr.io/stefanprodan/podinfo
+      tag: "6.7.0-broken-tag" # <-- deliberately broken tag for demo purposes
     replicas: 4
-    port: 8080
-    config:
-      maxItemsPerOrder: "100"
-      discountRate: "0.1"
-      featureBulkDiscount: "true"
+    port: 9898
     canary:
       steps:
         - setWeight: 20
