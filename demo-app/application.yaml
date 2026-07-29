@@ -34,7 +34,7 @@ spec:
     replicas: 4
     port: 8080
     config:
-      maxItemsPerOrder: "lots"
+      maxItemsPerOrder: "100"
       discountRate: "0.1"
       featureBulkDiscount: "true"
     canary:
