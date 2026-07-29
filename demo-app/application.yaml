@@ -30,7 +30,7 @@ spec:
   parameters:
     image:
       repository: localhost/widget-api
-      tag: "1.0.0-broken"  # <-- intentionally broken for demo
+      tag: "1.0.0"
     replicas: 4
     port: 8080
     config:
@@ -46,8 +46,6 @@ spec:
         - setWeight: 80
           pauseSeconds: 30
       analysis:
-        # Adjust to match your kube-prometheus-stack Service name/namespace
-        # if it's not this default (check: kubectl get svc -n monitoring)
         prometheusAddress: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
         interval: "15s"
         count: 5
