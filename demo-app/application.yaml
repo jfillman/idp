@@ -29,7 +29,7 @@ metadata:
 spec:
   parameters:
     image:
-      repository: widget-api
+      repository: localhost/widget-api
       tag: "1.0.0"
     replicas: 4
     port: 8080
