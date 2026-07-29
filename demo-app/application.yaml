@@ -29,8 +29,8 @@ metadata:
 spec:
   parameters:
     image:
-      repository: widget-api
-      tag: "1.0.0"
+      repository: ghcr.io/stefanprodan/podinfo
+      tag: "6.7.0-broken-tag" # <-- deliberately broken tag for demo purposes
     replicas: 4
     port: 8080
     config:
