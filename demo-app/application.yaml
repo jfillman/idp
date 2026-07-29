@@ -19,7 +19,7 @@ spec:
   parameters:
     image:
       repository: ghcr.io/stefanprodan/podinfo
-      tag: "6.7.0"
+      tag: "6.7.0-broken-tag" # <-- deliberately broken tag for demo purposes
     replicas: 4
     port: 9898
     canary:
