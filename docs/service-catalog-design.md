@@ -600,17 +600,35 @@ commitment, sometimes aggregating multiple SLOs with consequences attached) is a
 reporting/business layer that can be built later, on top of SLOs that already exist —
 nothing about building `SLO` first forecloses adding an `SLAReport` XRD afterward.
 
-**Superseded 2026-08-13: built hand-rolled, not wrapping Sloth.** The reasoning below
-("don't reinvent SLO-to-alerting-rule translation") was the original lean, but the user
-explicitly chose the hand-rolled approach instead (inspired by a
+**Superseded again, same day: switched to wrapping Sloth after all.** The hand-rolled
+revision immediately below was built and live-verified first (own PromQL/burn-rate
+math, no Sloth dependency) - then, discussing it further, the user asked for a
+pros/cons comparison and was persuaded back to wrapping Sloth, for two concrete
+reasons: the hand-rolled version only implemented a 2-tier simplification of the SRE
+workbook's real 4-window pattern (page + ticket tiers each have a fast AND a slow
+alert; the hand-rolled version only had one per severity), and "wrap an existing tool"
+is this project's convention everywhere else (Argo Rollouts, ESO, component charts) -
+the hand-rolled version was the outlier, not the house style. Also built and
+live-verified on `kind-dev`, on a second pass after this: the XRD got SIMPLER, not
+more complex, switching to Sloth - `spec.window` and `spec.alerting.burnRates` are
+both gone, since Sloth computes the compliance period (a controller-wide default, not
+per-SLO - confirmed against Sloth's own CRD schema) and the full canonical burn-rate
+pattern automatically from just `objective`. The Composition generates a Sloth
+`sloth.slok.dev/v1 PrometheusServiceLevel`, not a `PrometheusRule` directly - Sloth's
+own controller (`gitops-cluster-dev/10-crds-operators/sloth/`) does that translation.
+See `idp-service-catalog/README.md`'s Status section for the real bugs hit switching
+(most notably: a second `function-go-templating` Function registration, added to keep
+the SLO Composition's templates isolated, corrupted Crossplane's package-manager lock
+graph for every OTHER Function on the cluster - fixed by using `source: Inline`
+instead, which also meant no separate Function/mount was needed at all).
+
+**Superseded 2026-08-13: built hand-rolled, not wrapping Sloth** (first pass, later
+superseded again above). The reasoning below ("don't reinvent SLO-to-alerting-rule
+translation") was the original lean, but the user explicitly chose the hand-rolled
+approach instead (inspired by a
 [kube-slo-style article](https://dpacgdm.medium.com/your-slos-should-be-kubernetes-resources-not-grafana-dashboards-8d94820e2b32)
 proposing exactly that), trading Sloth's battle-tested math for one dependency-free
-artifact with no extra in-cluster controller. Built and live-verified on `kind-dev`:
-`idp-service-catalog/xrds/slo.yaml` (XRD) +
-`idp-service-catalog/compositions/slo/` (Composition, `function-go-templating`,
-generates a `PrometheusRule` — recording rules per burn-rate window + the compliance
-window, multiwindow-multi-burn-rate alerting per the Google SRE workbook pattern — and
-a Grafana dashboard `ConfigMap`). Original text kept below for the record:
+artifact with no extra in-cluster controller. Original text kept below for the record:
 
 ~~**Don't reinvent SLO-to-alerting-rule translation — wrap an existing tool.**
 [Sloth](https://sloth.dev) (or OpenSLO/Pyrra, same space) already solves "SLO spec →
