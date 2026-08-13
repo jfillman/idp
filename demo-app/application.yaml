@@ -30,6 +30,16 @@ spec:
   parameters:
     image:
       repository: localhost/widget-api
+      # IMPORTANT: this tag must reference an image that is actually
+      # present/pullable (locally loaded for this cluster, e.g. via
+      # `kind load` / `k3d image import`). On 2026-08-13 the live
+      # Rollout's canary was deployed with tag
+      # "1.0.0-this-tag-does-not-exist", which is not a real image and
+      # caused ImagePullBackOff -> ProgressDeadlineExceeded -> an
+      # automatic Argo Rollouts abort/rollback to the stable
+      # ReplicaSet. "1.0.0" below is the last known-good, verified
+      # image (matches the stable ReplicaSet that stayed healthy
+      # throughout the incident).
       tag: "1.0.0"
     replicas: 2
     port: 8080
