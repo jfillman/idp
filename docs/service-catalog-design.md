@@ -56,8 +56,75 @@ break DNS/external-API calls in a much more confusing way than ingress isolation
 so egress-tightening is the escape hatch (`extraEgressRules`), not the default.
 **`volumes` (PVC support)** joins the Embedded tier, using the exact same list-of-objects
 + generic range-loop pattern already established for `configMaps` — one PVC + one
-`volumeMount` per entry, no new rendering mechanism needed. Chart implementation itself
-deferred to a later session; this is the confirmed schema it should build against.
+`volumeMount` per entry, no new rendering mechanism needed. Chart implementation was
+deferred to a later session at the time this paragraph was written; see the revision
+note below — it's since been built.
+
+**Revised 2026-08-13** (third session of the day): the `idp-application` chart
+itself is now built (`idp-service-catalog/charts/idp-application`), `helm
+lint`/`helm template` verified against three fixtures (minimal, full-featured
+including `blueGreen`, and an `appType: infra` standalone-component release
+with no workload). §3 below is unchanged as the schema source of truth: the
+chart's own `values.yaml` documents every field from that schema plus a small
+number of fields §3 left genuinely unspecified (an app-facing `secrets:`
+entry's Infisical path selection, `configMaps:` mount paths, and similar) -
+see `charts/idp-application/README.md` for the concrete list, not repeated
+here since it's implementation detail, not design. One real naming collision
+worth recording here rather than just in the chart README, since it's a trap
+this doc's own schema shape invites: **`cluster`/env-identity fields needed
+for `spec.environmentRef` (§ Framework) cannot be named `env`** - §3's schema
+already uses the top-level key `env` for the Embedded-tier container env-var
+list (`env: [{name: FOO, value: bar}]`); a same-named identity field silently
+collides with it in one flat values map. Caught live by `helm lint` during
+this build (`range .Values.env` failed with "can't iterate over dev") - named
+`envName` instead. Two things stayed genuinely unresolved, not implementation
+gaps but real open questions this pass didn't answer: the actual Crossplane
+API group for `components:`/`slos:` XRs (none of those XRDs exist yet - the
+chart uses a placeholder, `catalog.idp.io/v1alpha1`) and the platform's
+default canary step sequence (§ "Still open" item 3, below - the chart renders
+a deliberately inert single-step placeholder, not a real default).
+
+**Revised 2026-08-13** (fourth session of the day, immediately after the above):
+a deliberate v1 resource-coverage pass on the now-built chart, prompted by "what
+else should be in v1 so we don't have to keep changing this chart" - **entirely
+beyond §3's schema**, not a gap in it, so not folded into §3 itself; recorded here
+only as a pointer, full detail in `charts/idp-application/README.md`. Added: a
+dedicated ServiceAccount (the identity every pod now runs as, instead of the
+namespace's implicit `default` - the one thing on this list that's genuinely hard
+to retrofit once real deployments exist), `jobs:`/`cronJobs:` batch tasks sharing
+the main workload's env/secrets/config automatically, a ServiceMonitor
+(`kube-prometheus-stack` is already installed cluster-side), and a raw
+`extraManifests:` escape hatch matching `idp-cluster-baseline`'s own pattern. One
+more real bug caught live, general enough to be worth a line here too: **Sprig's
+`default` function treats an explicit `false`/`0` exactly like "unset" and
+silently substitutes the default anyway** - `hook: false` on a `jobs:` entry still
+rendered as `hook: true` until fixed with an explicit `hasKey` check instead. Any
+future schema field on this chart where the Go zero value is a legitimate,
+meaningful setting (not just "not configured") needs the same treatment, not a
+bare `| default`.
+
+**Revised 2026-08-13** (fifth session of the day): code review of the built
+chart surfaced three more real gaps in §3's `configMaps:`/`secrets:` schema
+itself (not the resource-coverage pass above, and unlike that pass, folded
+directly into §3's own schema block below, since these are genuine additions
+to fields §3 already specifies, not new resource kinds outside it) - full
+detail in `charts/idp-application/README.md`. `secrets:` could only ever become an env
+var, never a mounted file; `configMaps:` could only ever be volume-mounted,
+never `envFrom`'d; and `configMaps:` could only ever be chart-owned via
+`data:`, with no way to reference one created outside this chart - the last
+one a real, concrete need (a Kustomize `configMapGenerator`'s output). Both
+lists gained an `as: env | volume | both` field; `configMaps:` gained
+`existingConfigMap:` as a `data:` alternative. **Your call on the Kustomize
+case specifically**: a fixed name (`disableNameSuffixHash: true`), not a
+hash-suffixed one requiring external sync - the accepted tradeoff is that
+ConfigMap loses Kustomize's own automatic-rollout-on-content-change property.
+Closed a related, adjacent gap at the same time: `configMaps[].data`/secret
+edits previously didn't change the Rollout's pod template at all (same
+name/keys), so Argo Rollouts never started a new revision - fixed with
+`checksum/configmaps`/`checksum/secrets` pod-template annotations, though the
+secrets one only catches a *declaration* change, not a value rotated in
+Infisical without touching `values.yaml` (a different, harder problem, not
+solved here).
 
 ## Terminology (Crossplane v2 primitives, for reference)
 
@@ -309,7 +376,11 @@ analysisTemplates:          # Embedded — app-specific custom AnalysisTemplates
   - name: checkout-conversion-rate
     metrics: [...]
 env: [{name: FOO, value: bar}]              # Embedded
-configMaps:                 # Embedded — revised this round, see "Rendering mechanism" below
+configMaps:                 # Embedded — revised this round, see "Rendering mechanism" below.
+                             # `as: env|volume|both` (default volume) and
+                             # `existingConfigMap:` (a data: alternative, for one this
+                             # chart doesn't own — e.g. a Kustomize configMapGenerator's
+                             # output) added 2026-08-13, see revision note above.
   - name: app-settings
     data: {app-config.yaml: "...", logging.yaml: "..."}
   - name: feature-flags
@@ -317,7 +388,11 @@ configMaps:                 # Embedded — revised this round, see "Rendering me
 secrets: [{name: db-password, key: DB_PASSWORD}]        # Embedded — same appSecretStores/ESO
                                                           # mechanism platform-cicd already built,
                                                           # not reinvented here — unlike ConfigMap,
-                                                          # NOT revised to a multi-object shape, see below
+                                                          # NOT revised to a multi-object shape, see below.
+                                                          # `as: env|volume|both` (default env)
+                                                          # added 2026-08-13, see revision note above —
+                                                          # volume mode mounts one key at an exact
+                                                          # file path, not a directory.
 volumes:                   # Embedded — PVC support, added 2026-08-13. Same list-of-objects
                              # + generic range-loop pattern as configMaps: one PVC + one
                              # volumeMount per entry.
@@ -431,12 +506,11 @@ itself (can't render its own container), platform-shared infra (ingress controll
 Vault server if one exists — see the Component/Vault discussion below). Those live in
 cluster config, referenced by name, never templated here.
 
-**Open design question this doc doesn't resolve**: should `rollout:` (the workload
-block) be genuinely optional (so an `appType: infra` release with only a `components:`
-block — e.g. a standalone Redis with no app code at all — is a valid, normal use of this
-same chart), or does infra-only deployment want a separate, lighter sibling chart with
-no workload-shaped fields at all? Leaning toward "optional in the same chart" for
-mechanism reuse, flagged for confirmation in Components below.
+**Resolved 2026-08-13, when the chart was built**: `rollout:` is genuinely optional
+(set to `null`/omitted) rather than needing a separate, lighter sibling chart — the
+"optional in the same chart" leaning below, confirmed. Implemented and fixture-tested
+(an `appType: infra` release with only a `components:` block renders cleanly, no
+Rollout/Service/HPA/PDB/AnalysisTemplate, just the NetworkPolicy and the Component XR).
 
 ---
 
@@ -734,21 +808,32 @@ controller itself — belongs in cluster config, not something to leave to chanc
 cluster.
 Sources: [Argo CD Resource Health docs](https://argo-cd.readthedocs.io/en/latest/operator-manual/health/), [How to Configure Health Checks for Argo Rollouts in ArgoCD](https://oneuptime.com/blog/post/2026-02-26-argocd-health-checks-argo-rollouts/view)
 
+**Resolved 2026-08-13**: `idp-application`'s `rollout:` block is genuinely optional
+(§3, chart built) — a standalone `infra`-type component (§ Components) reuses the exact
+same chart, no second sibling chart needed.
+
 **Still open:**
 
-1. **Does `idp-application`'s `rollout:` block need to be genuinely optional**
-   (§3) — this is what lets a standalone `infra`-type component (§ Components) reuse the
-   exact same chart instead of needing a second, workload-less sibling chart.
-2. **Does a mature native Crossplane `provider-infisical` exist** (§ item 8), or does
+1. **Does a mature native Crossplane `provider-infisical` exist** (§ item 8), or does
    the `SecretStore` XRD's backend-configuration step need to go through
    `provider-terraform` wrapping Infisical's own Terraform provider instead? Not
    verified yet.
-3. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
+2. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
    `idp-application` should ship a sensible default (weights, pauses, which
    `ClusterAnalysisTemplate`(s) attach automatically) so most apps never need to specify
    `rollout.steps` at all, matching the "golden path, fully automated" goal, now
    sharpened by your confirmation that custom `analysisTemplates:` should be rare — not
-   designed here.
-4. The chart-architecture question raised this round (one `idp-application` chart vs.
+   designed here. The chart (built 2026-08-13) ships a deliberately inert single-step
+   placeholder in the meantime — see `charts/idp-application/README.md`.
+3. The chart-architecture question raised this round (one `idp-application` chart vs.
    splitting pieces like ConfigMap out) — addressed in chat, not yet folded into a doc
-   revision pending your read.
+   revision pending your read. (Built as one chart, per the original leaning — worth
+   confirming this is still the intended resolution now that it's real code, not just
+   the leaning.)
+4. **The actual Crossplane API group for `components:`/`slos:` XRs** — not fixed
+   anywhere yet (none of those XRDs exist). The chart uses a placeholder,
+   `catalog.idp.io/v1alpha1`, one value to update once this is decided.
+5. **The real namespace/labels that identify the ingress controller** (§3's
+   `networkPolicy.allowIngressFromIngressController`) — no ingress controller has been
+   installed or named anywhere in idp's docs yet. The chart defaults to the
+   `ingress-nginx` project's conventional namespace label as a placeholder.
