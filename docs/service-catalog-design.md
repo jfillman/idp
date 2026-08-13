@@ -126,6 +126,20 @@ secrets one only catches a *declaration* change, not a value rotated in
 Infisical without touching `values.yaml` (a different, harder problem, not
 solved here).
 
+**Revised 2026-08-13** (sixth session of the day): `networkPolicy:`'s
+`extraIngressRules`/`extraEgressRules` escape hatch works but requires knowing
+the real K8s `NetworkPolicyPeer`/`NetworkPolicyPort` shape - not simple for the
+dominant real case, "let this other namespace (optionally narrowed to some
+pods) or this CIDR reach me on this port." `allowIngressFrom:`/`allowEgressTo:`
+(folded directly into §3's schema block below, same reasoning as the
+`configMaps:`/`secrets:` revision above - a genuine addition to a field §3
+already specifies) cover that flatly: `{namespace, podLabels?, ports?}` or
+`{cidr, ports?}`, ports as bare TCP port numbers. `namespace:` resolves via the
+same `kubernetes.io/metadata.name`-label mechanism already used for
+`ingressControllerNamespaceSelector`, not a new idiom. Both raw escape hatches
+stay, unchanged, for UDP/SCTP or multiple ORed peers in one rule - full detail
+in `charts/idp-application/README.md`.
+
 ## Terminology (Crossplane v2 primitives, for reference)
 
 **Confirmed: this design targets Crossplane v2.** v2's real, load-bearing change from
@@ -411,8 +425,18 @@ networkPolicy:              # Embedded — added 2026-08-13. Default reflects "i
                              # egress left open by default — see revision note above for why.
   enabled: true
   allowIngressFromIngressController: true
-  extraIngressRules: []      # raw NetworkPolicyIngressRule list — escape hatch for e.g. a
-                             # specific other namespace/app needing direct access
+  allowIngressFrom:         # simplified peers, added 2026-08-13 — {namespace, podLabels?,
+                             # ports?} or {cidr, ports?}; namespace resolves via the
+                             # auto-populated kubernetes.io/metadata.name label, same
+                             # mechanism as ingressControllerNamespaceSelector. See
+                             # revision note above and idp-application's own README for
+                             # why extraIngressRules alone wasn't simple enough.
+    - namespace: app-payments-prod
+      ports: [8080]
+  allowEgressTo: []          # same shape as allowIngressFrom, for egress
+  extraIngressRules: []      # raw NetworkPolicyIngressRule list — escape hatch for
+                             # whatever allowIngressFrom can't express (UDP/SCTP,
+                             # multiple ORed peers in one rule)
   extraEgressRules: []
 components:               # Attached — rendered as Component XRs, see below
   - type: redis
@@ -576,12 +600,24 @@ commitment, sometimes aggregating multiple SLOs with consequences attached) is a
 reporting/business layer that can be built later, on top of SLOs that already exist —
 nothing about building `SLO` first forecloses adding an `SLAReport` XRD afterward.
 
-**Don't reinvent SLO-to-alerting-rule translation — wrap an existing tool.**
+**Superseded 2026-08-13: built hand-rolled, not wrapping Sloth.** The reasoning below
+("don't reinvent SLO-to-alerting-rule translation") was the original lean, but the user
+explicitly chose the hand-rolled approach instead (inspired by a
+[kube-slo-style article](https://dpacgdm.medium.com/your-slos-should-be-kubernetes-resources-not-grafana-dashboards-8d94820e2b32)
+proposing exactly that), trading Sloth's battle-tested math for one dependency-free
+artifact with no extra in-cluster controller. Built and live-verified on `kind-dev`:
+`idp-service-catalog/xrds/slo.yaml` (XRD) +
+`idp-service-catalog/compositions/slo/` (Composition, `function-go-templating`,
+generates a `PrometheusRule` — recording rules per burn-rate window + the compliance
+window, multiwindow-multi-burn-rate alerting per the Google SRE workbook pattern — and
+a Grafana dashboard `ConfigMap`). Original text kept below for the record:
+
+~~**Don't reinvent SLO-to-alerting-rule translation — wrap an existing tool.**
 [Sloth](https://sloth.dev) (or OpenSLO/Pyrra, same space) already solves "SLO spec →
 multiwindow-multi-burn-rate Prometheus recording/alerting rules" correctly; the `SLO`
 XRD's Composition should generate whatever CR that tool consumes (or generate
 `PrometheusRule` directly if going dependency-free), not hand-roll the burn-rate math in
-a Composition Function.
+a Composition Function.~~
 
 **Attached-tier, per the revised mechanism (§ Framework)**: a `slos:` block in that
 env's own `values.yaml` (an app can have different SLOs for staging vs. prod, since each
