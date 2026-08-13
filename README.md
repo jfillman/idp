@@ -57,13 +57,31 @@ untouched) — see [[idp_session_build_phase1]] in memory.
   `10-crds-operators`/`40-observability`) — closes the last "hand `kubectl apply` only"
   gap, live-verified end-to-end (a real SLO XR → Sloth → a real `PrometheusRule`).
 
-**Phase 3, starting now**: rest of the v1 service catalog. First up —
-`NodeJSApplication`, the first Bootstrap-tier XRD (§ Framework's `provider-github`
-mechanism, §1/§2 of `service-catalog-design.md`), since `ApplicationEnvironment` has a
-real functional dependency on it (it commits into `gitops-<app-name>`, which only
-exists once a Bootstrap-tier XRD has created it empty) — not just a doc-ordering
-preference. `SpringBootApplication`, `ApplicationEnvironment`, and the Component XRDs
-(Redis, `OAuthServer`, Database, Queue, `SecretStore`) follow.
+**Phase 3, starting now**: rest of the v1 service catalog. Tracing `NodeJSApplication`'s
+own dependencies first surfaced a real prerequisite gap: `ApplicationEnvironment` needs
+somewhere real to commit an onboarding entry (`gitops-strategy.md` §5/§6's
+tenant-onboarding `ApplicationSet` + per-app `AppProject`), and neither existed. That
+plumbing is now real and live-verified 2026-08-13 —
+`gitops-cluster-dev/02-argocd-apps/` (`tenant-appprojects` + `tenant-onboarding`
+`ApplicationSet`s, reading the newly-bootstrapped `gitops-cluster-dev-tenants` repo),
+built inside the existing single `01-argocd` instance rather than standing up a real
+second `argocd-apps` instance (that split stays deferred to its own Phase 4 task).
+Verified with a throwaway tenant, including a live `AppProject` boundary rejection
+(`InvalidSpecError`, same mechanism already proven in `platform-cicd`) — see
+`gitops-cluster-dev`'s own README for the real deletion-ordering bug this surfaced
+(pruning an `AppProject` before its dependent `Application`'s own finalizer finishes
+permanently stuck that `Application` — worked around by clearing the finalizer by hand
+for the throwaway case, not yet a designed fix).
+
+First XRD up next — `NodeJSApplication`, the first Bootstrap-tier XRD (§ Framework's
+`provider-github` mechanism, §1/§2 of `service-catalog-design.md`). Its own
+CICD-onboarding-commit step (giving a new app a real dev-cluster Tekton pipeline) stays
+explicitly stubbed/deferred — that depends on migrating `platform-cicd`'s control plane
+onto `kind-dev`, investigated this same session and found to be a genuine multi-day
+effort (~300+ objects, a hardcoded per-cluster Fulcio CA, an undocumented secret, a
+replace-vs-coexist decision against `kind-observe`) — its own separate future task, not
+bundled into the XRD build. `SpringBootApplication`, `ApplicationEnvironment`, and the
+Component XRDs (Redis, `OAuthServer`, Database, Queue, `SecretStore`) follow.
 
 **Phase 4**: the two-ArgoCD-instance split + ArgoCD self-management (deliberately last
 — both touch the instance currently running every live `platform-cicd` pipeline).
