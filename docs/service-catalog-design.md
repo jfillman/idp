@@ -39,6 +39,26 @@ caught and reverted a wrong call from the previous round (a namespaced `SecretSt
 doesn't survive cross-namespace sharing; back to `ClusterSecretStore`, namespace-scoped
 via `spec.conditions`). See item 8.
 
+**Revised 2026-08-13** (separate session, after Phase 2's first slice — see
+[[idp_session_phase2_holmesgpt]] — was built and live-verified): three additions to
+§3's schema, confirmed before implementation started. **`rollout.podSpec: {}`** — a raw
+map, deep-merged (Sprig `mergeOverwrite`) onto the rendered `.spec.template.spec` after
+every curated/generated field — is the actual "any pod-spec field" escape hatch this doc
+had only gestured at before. Deliberately excludes `containers` itself (the curated
+fields above it cover the main container; `extraContainers: []` covers sidecars) —
+`mergeOverwrite` replaces whole arrays rather than merging by index, so letting this
+escape hatch touch `containers` would silently clobber the chart's own rendered
+container list instead of extending it. **`networkPolicy`** joins the Embedded tier,
+default `enabled: true`: deny cross-namespace ingress except from the ingress controller
+(only relevant when `ingress.enabled`), leave egress open by default — an ingress-only
+default was a deliberate choice, not an oversight; defaulting egress closed too would
+break DNS/external-API calls in a much more confusing way than ingress isolation does,
+so egress-tightening is the escape hatch (`extraEgressRules`), not the default.
+**`volumes` (PVC support)** joins the Embedded tier, using the exact same list-of-objects
++ generic range-loop pattern already established for `configMaps` — one PVC + one
+`volumeMount` per entry, no new rendering mechanism needed. Chart implementation itself
+deferred to a later session; this is the confirmed schema it should build against.
+
 ## Terminology (Crossplane v2 primitives, for reference)
 
 **Confirmed: this design targets Crossplane v2.** v2's real, load-bearing change from
@@ -259,6 +279,32 @@ rollout:                   # Embedded — Argo Rollouts is the default workload,
   replicas: 2
   resources: {...}
   strategy: canary          # canary | blueGreen — platform supplies default steps unless overridden
+  # Curated, safe-default escape hatches for the main container/pod — common enough to
+  # deserve real fields rather than forcing every app through the raw podSpec escape
+  # hatch below. Each is toYaml'd straight in when set; the chart supplies a sane
+  # default (e.g. an httpGet probe on the first port) when omitted.
+  command: []
+  args: []
+  ports: [{name: http, containerPort: 8080}]     # first entry doubles as the Service/ingress target
+  livenessProbe: {}
+  readinessProbe: {}
+  podSecurityContext: {}
+  containerSecurityContext: {}
+  extraContainers: []       # full container specs, appended as-is (sidecars) — kept
+                             # separate from podSpec.containers, see below
+  podSpec: {}                # the actual "any pod-spec field" escape hatch — a raw map,
+                             # deep-merged (Sprig mergeOverwrite) onto the rendered
+                             # .spec.template.spec AFTER every curated/generated field
+                             # (main container, volumes from configMaps/secrets/volumes
+                             # below, extraContainers). Anything not already covered by a
+                             # curated field goes here: tolerations, affinity,
+                             # nodeSelector, topologySpreadConstraints, dnsPolicy,
+                             # hostAliases, terminationGracePeriodSeconds, etc.
+                             # Deliberately NOT for containers[0] (use the curated fields
+                             # above) or additional containers (use extraContainers) —
+                             # mergeOverwrite replaces whole arrays rather than merging by
+                             # index, so mixing container edits into this escape hatch
+                             # would silently clobber the chart-rendered container list.
 analysisTemplates:          # Embedded — app-specific custom AnalysisTemplates, see § below.
   - name: checkout-conversion-rate
     metrics: [...]
@@ -272,9 +318,27 @@ secrets: [{name: db-password, key: DB_PASSWORD}]        # Embedded — same appS
                                                           # mechanism platform-cicd already built,
                                                           # not reinvented here — unlike ConfigMap,
                                                           # NOT revised to a multi-object shape, see below
+volumes:                   # Embedded — PVC support, added 2026-08-13. Same list-of-objects
+                             # + generic range-loop pattern as configMaps: one PVC + one
+                             # volumeMount per entry.
+  - name: uploads
+    size: 10Gi
+    storageClassName: standard      # omit for cluster default
+    accessModes: [ReadWriteOnce]    # default if omitted
+    mountPath: /data/uploads
 autoscaling: {enabled: false, min: 2, max: 10, targetCPUPercent: 70}  # Embedded — scaleTargetRef.kind: Rollout
 podDisruptionBudget: {enabled: false}                                 # Embedded
 ingress: {enabled: true, host: my-app.example.com}                    # Embedded
+networkPolicy:              # Embedded — added 2026-08-13. Default reflects "isolate
+                             # traffic to its own namespace": deny cross-namespace ingress
+                             # except from the ingress controller (only relevant when
+                             # ingress.enabled) and other pods in this same namespace;
+                             # egress left open by default — see revision note above for why.
+  enabled: true
+  allowIngressFromIngressController: true
+  extraIngressRules: []      # raw NetworkPolicyIngressRule list — escape hatch for e.g. a
+                             # specific other namespace/app needing direct access
+  extraEgressRules: []
 components:               # Attached — rendered as Component XRs, see below
   - type: redis
     name: cache
