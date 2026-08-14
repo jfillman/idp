@@ -252,25 +252,76 @@ remembering then, not a reason to act now.
 ## §1. `provider-github` is the mechanism behind every "create/commit to a repo" step
 
 Category-1 XRDs (§0) need to create a GitHub repo and commit files into it, without a
-publish/package step and without a full clone-commit-push flow. Upbound's official
-`provider-github` (wraps the Terraform GitHub provider) does this as plain managed
-resources: `Repository` (create the repo), `RepositoryFile` (create/update a single
-file via GitHub's Contents API — this is what writes boilerplate files, `cicd.yaml`, a
-tenant `identity.yaml`-equivalent, or an env's `values.yaml`), `BranchProtection`
-(required checks/reviewers, matching what `platform-cicd` already enforces on
-`gitops-<app-name>` today). One GitHub App credential (same shape as the one
-`platform-cicd`'s `token-review-interceptor` already mints per-repo tokens from) backs
-the `ProviderConfig` — no new credential class, reuses the existing one.
+publish/package step and without a full clone-commit-push flow. The real package
+(confirmed live building `NodeJSApplication`, not just this doc's original shorthand) is
+`crossplane-contrib/provider-upjet-github` — `provider-github` was a guess at the name,
+the actual xpkg reference is `xpkg.upbound.io/crossplane-contrib/provider-upjet-github`.
+It wraps the Terraform GitHub provider as plain managed resources: `Repository` (create
+the repo), `RepositoryFile` (create/update a single file via GitHub's Contents API — this
+is what writes boilerplate files, `cicd.yaml`, a tenant `identity.yaml`-equivalent, or an
+env's `values.yaml`), `BranchProtection` (required checks/reviewers, matching what
+`platform-cicd` already enforces on `gitops-<app-name>` today — **not built in
+`NodeJSApplication`'s first pass**, since it would need to reference status-check names
+from a CICD pipeline that doesn't exist yet on this cluster, see Item 1/2's status note).
+**Credential: not the GitHub App after all — corrected live, this was the doc's biggest
+wrong assumption.** The original plan ("one GitHub App credential, same shape as
+`token-review-interceptor` already mints from — no new credential class") turned out to
+be structurally impossible for this catalog's actual GitHub account: `jfillman` is a
+personal **User** account, not an Organization, and GitHub Apps are unconditionally
+blocked from `POST /user/repos` (`403 Resource not accessible by integration`) — a
+documented platform restriction, not a permissions/scope gap on the App. GitHub Apps can
+only create repositories inside an Organization they're installed on. Confirmed live
+building `NodeJSApplication`: the App credential 403'd on every `Repository` create,
+with zero App-permission configuration able to fix it. **Live fix: a classic PAT
+(`repo` + `delete_repo` scopes), stored the same way** (`source: Secret`, JSON
+`{"owner": "jfillman", "token": "..."}` — the provider's `githubConfig.Token` field,
+plain PAT auth alongside its `app_auth` field, not instead of it as a provider
+limitation — this catalog just doesn't use `app_auth` now). This **is** a new credential
+class, contradicting the original plan — tracked here as a known, deliberate deviation,
+not silently reconciled. Revisit if `jfillman` ever becomes/moves under an Organization,
+which would reopen the GitHub-App path. `owner` stays a **ProviderConfig-wide** setting
+either way (required, confirmed live against the provider's own credential-parsing
+source) — not a per-`Repository` field, so no XRD in this catalog takes an owner as a
+spec field regardless of which credential type backs it.
 
-## §2. Composition authoring: Composition Functions, not pure patch-and-transform
+**Managed-resource family: the namespaced one (`repo.github.m.upbound.io`), not the
+Cluster-scoped one — also corrected live, a second wrong first guess.** The provider
+ships both a Cluster-scoped family (`repo.github.upbound.io`) and a namespaced one
+(`repo.github.m.upbound.io`); the Cluster-scoped one looked like the safer choice at
+first because it has real, complete examples in the provider's own repo (the namespaced
+example tree uses a stale, never-filled-in placeholder apiVersion,
+`template.m.crossplane.io/v1beta1`, that reads like unfinished scaffolding). That
+first guess broke immediately on a real cluster: Crossplane v2 hard-rejects a namespaced
+XR composing a Cluster-scoped managed resource at all (`cannot apply cluster scoped
+composed resource ... for a namespaced composite resource`) — not a permissions issue,
+a structural one. The namespaced family's CRDs are genuinely installed and working
+despite its misleading examples; `NodeJSApplication` composes those instead, via a
+`ClusterProviderConfig` (`github.m.upbound.io/v1beta1`, not the legacy Cluster-scoped
+`ProviderConfig`) so the one credential stays referenceable from every namespace without
+duplicating the Secret per app. Lesson for the next Bootstrap-tier XRD
+(`ApplicationEnvironment`) or any future provider adoption: check the actual installed
+CRD scope (`kubectl api-resources`) before trusting which variant a provider's example
+directory happens to document best.
 
-Rendering a language-specific boilerplate file set (multiple files, conditional
-content based on `nodeVersion`/`packageManager`/etc.) is real logic, not a field-by-field
-patch — patch-and-transform alone gets unwieldy fast for this. Recommend a pipeline of
-`function-patch-and-transform` for the simple field-mapping parts (XR spec → managed
-resource spec) plus a dedicated function (KCL or Go templating) for the file-rendering
-parts, shared across `NodeJSApplication` and `SpringBootApplication` rather than
-duplicated — one function, parameterized by stack, both XRDs' Compositions call into it.
+## §2. Composition authoring: function-go-templating, not patch-and-transform + KCL
+
+**Revised after actually building `NodeJSApplication`.** This section originally
+recommended a pipeline of `function-patch-and-transform` for field-mapping plus a
+dedicated KCL-or-Go-templating function for file-rendering, shared across
+`NodeJSApplication` and `SpringBootApplication`. What got built instead, matching the
+real convention the `SLO` Composition already established: **pure
+`function-go-templating`, `source: Inline`, generated from `templates/*.yaml` via a
+`build-composition.sh` script** (`idp-service-catalog/compositions/slo/`, now also
+`compositions/nodejsapplication/`) — no `function-patch-and-transform` step, no second
+Function registration. A second `Function` object pointing at a package reference
+already installed (e.g. a dedicated file-rendering function alongside the shared
+`function-go-templating`) corrupted Crossplane's shared dependency-lock graph
+cluster-wide, a real bug hit live building the `SLO` Composition (see that Composition's
+`build-composition.sh` header) — reusing the one already-installed `function-go-templating`
+Function via `Inline` templates avoids the problem entirely rather than working around it.
+The "shared function, parameterized by stack" idea for `NodeJSApplication`/
+`SpringBootApplication` code reuse is deferred until `SpringBootApplication` actually
+gets built — nothing to share yet with only one stack implemented.
 
 **Confirmed: Crossplane v2 target.** See the Terminology section above for what that
 changes — namespaced XRs directly, no separate Claim type. Composition Functions
@@ -546,17 +597,48 @@ Backstage template — argues for it directly: a developer picking "New Service"
 distinct, clearly-labeled template cards, not a generic form with a language dropdown
 buried inside. Matches the existing memory note on this (favor XRD designs that "read
 cleanly as a Backstage template input" over internally-convenient ones). The repo-
-creation/CICD-onboarding logic that's ~90% identical across languages lives in the
-shared Composition Function from §2, not duplicated per XRD.
+creation/CICD-onboarding logic that's ~90% identical across languages would live in a
+shared Composition Function per §2's original plan — deferred until `SpringBootApplication`
+actually gets built (see §2's revision note); `NodeJSApplication`'s own Composition isn't
+factored for sharing yet, nothing to share with only one stack implemented.
 
 **Scope, deliberately narrow**: src repo + boilerplate + an *empty, scaffolded*
-`gitops-<app-name>` repo + CICD onboarding (commits an `identity.yaml`-equivalent into
-`gitops-cluster-dev-tenants`, giving the app its dev-cluster CI pipeline and, per §10 of
-`gitops-strategy.md`, its lower-env self-service surface). **Not** upper-env
-provisioning — that's item 3. This split maps directly onto the lower/upper security
-boundary already designed: everything these two XRDs do is inherently dev-cluster,
-self-service, no-review-gate-needed territory; promoting to a real environment is a
-deliberately separate, higher-trust action.
+`gitops-<app-name>` repo + a `tenants/<app-name>/app.yaml` commit into
+`gitops-cluster-dev-tenants` (corrected from this section's original `identity.yaml`-
+equivalent guess — `app.yaml` is the real, already-built file this catalog's tenant
+`ApplicationSet`s read for the app-level `AppProject`, see
+`gitops-cluster-dev-tenants/README.md`). **Not** upper-env provisioning — that's item 3.
+This split maps directly onto the lower/upper security boundary already designed:
+everything these two XRDs do is inherently dev-cluster, self-service, no-review-gate-needed
+territory; promoting to a real environment is a deliberately separate, higher-trust action.
+
+**Status: `NodeJSApplication` built 2026-08-13** (`idp-service-catalog/xrds/
+nodejsapplication.yaml`, `compositions/nodejsapplication/`), live-verified on `kind-dev`.
+Real, load-bearing gap found building it, not assumed here: the "CICD onboarding" half of
+this scope genuinely can't complete yet, because `platform-cicd`'s control plane isn't
+running on `kind-dev` (separate, already-scoped migration task). The Composition still
+does everything else (real src/`gitops-<app-name>` repos, real boilerplate, real
+`tenants/<app-name>/app.yaml` commit) and surfaces the gap as an explicit custom
+condition (`CicdOnboarded: False`, reason `CicdOnboardingPending`) rather than silently
+succeeding or blocking — **not** an override of the standard `Ready` condition, which
+`function-go-templating` reserves and errors on if a Composition tries to set it
+directly (confirmed live; the framework's own custom-condition mechanism, target
+`CompositeAndClaim`, is the supported way to surface exactly this kind of "everything
+else succeeded except X" case). `SpringBootApplication` isn't built. `BranchProtection`
+was also deliberately left out of this pass — it would need to reference status-check
+names from a CICD pipeline that doesn't exist here yet, same root cause.
+
+Live verification (real `kubectl apply`, throwaway `nodejsapp-verify-test`) produced two
+real corrections, not assumed in the original design — see §1 for the full detail: the
+GitHub App credential can't create repos under `jfillman`'s personal account at all (a
+PAT backs the `ProviderConfig` instead, for now), and the Composition composes
+`repo.github.m.upbound.io` (namespaced), not `repo.github.upbound.io` (Cluster-scoped) —
+Crossplane v2 rejects the latter for a namespaced XR outright. Both real repos, all five
+boilerplate files, and the `tenants/nodejsapp-verify-test/app.yaml` commit were confirmed
+via the GitHub API before teardown. One more live footnote worth recording: the PAT
+needs `delete_repo` alongside `repo` — without it, `Repository` deletion 403s and the
+composed resource gets stuck `Terminating` (hit live during cleanup; not a
+`NodeJSApplication` bug, but relevant to anyone deprovisioning through this provider).
 
 **Why `gitops-<app-name>` gets created here, empty, rather than by item 3**: its
 lifecycle is app-level (create once), not env-level (create per cluster×env) — creating
