@@ -673,6 +673,34 @@ lower/upper taxonomy that's really a property of *which repo* the request lands 
 (gitops-<app-name> vs. `/platform/envs/`), not of the XRD itself. Easy to bikeshed
 further, low cost to rename later.
 
+**Built and live-verified 2026-08-15** (`idp-service-catalog/xrds/
+applicationenvironment.yaml`, `compositions/applicationenvironment/`). Two design
+calls resolved concretely, both confirmed against already-live code before deciding,
+not guessed:
+
+- **`cluster` stays a fixed Composition constant (`"kind-dev"`), not a spec field** —
+  confirmed the already-built `tenant-onboarding` ApplicationSet
+  (`gitops-cluster-dev/02-argocd-apps/tenant-onboarding/applicationset.yaml`) already
+  hardcodes the same literal in two places (`valuesObject.cluster` and its
+  `valueFiles` path); there's no real multi-cluster wiring anywhere downstream yet to
+  make a spec field meaningful. Matches `NodeJSApplication`'s own precedent
+  (`platformOwner`/`tenantsRepo` as fixed constants). Revisit once a second cluster's
+  own `tenant-onboarding` ApplicationSet actually exists.
+- **Initial `values.yaml` is an identity-only stub, `rollout: null`** — this
+  platform's CICD control plane isn't running on `kind-dev` yet, so there's no real
+  image to deploy at XR-creation time. Rather than seed a placeholder image that
+  would sit in permanent `ImagePullBackOff`, the Composition reports a sibling
+  `WorkloadDeployed: False` custom condition — direct copy of `NodeJSApplication`'s
+  own `CicdOnboarded: False` mechanism, same accepted limitation (doesn't
+  auto-clear once a developer's own follow-up PR sets a real `rollout.image`).
+
+Also confirmed before building: `SLO`'s own Composition doesn't actually implement
+the "extra resources lookup" dependency-ordering mechanism described below — it's
+aspirational text, not built anywhere in this catalog yet. `ApplicationEnvironment`
+doesn't need to expose anything for that lookup as a result; it's purely the write
+side of the `environmentRef` contract `SLO`'s XRD and the chart's own
+`environmentRef` helper already fix as `<appName>-<cluster>-<envName>`.
+
 ## Item 4: `SLO` (narrowed from SLA/SLO/SLI)
 
 **Start with one XRD, `SLO`, not three.** SLI (the measured indicator — e.g. p99
