@@ -415,11 +415,16 @@ Holmes instance has the same locality problem one level further out — whether 
 means Holmes runs per-cluster too, or stays shared with per-cluster-scoped credentials,
 needs its own pass.
 
-**Nothing above is buildable yet against a second dev cluster** — no second dev cluster
-exists — **but `kind-prod` now exists for testing the upper-env half**: the registry,
+**Upper-env half built and live-verified 2026-08-15**: the registry,
 `ApplicationEnvironment.spec.cluster` becoming real, the `type: upper`/`crossplaneReady`
-gating, and the first-time `app.yaml` seeding are all live-testable against it once
-implemented.
+gating (both the rejection and success paths), and the first-time `app.yaml` seeding
+are all real and proven end-to-end against `kind-prod` — see Item 3's own "Built and
+live-verified for real" note below for the detail, including one real bug found and
+fixed (`managementPolicies`, not `deletionPolicy`). Still not buildable: a second
+*dev* cluster (`NodeJSApplication.spec.devCluster` and its own registry gate) — no
+second dev cluster exists yet, and that field was explicitly out of scope for this
+pass. AI-triage's own redesign (this section, above) also remains unbuilt — a
+separate pass.
 
 ## §1. `provider-github` is the mechanism behind every "create/commit to a repo" step
 
@@ -877,6 +882,23 @@ not guessed:
   `WorkloadDeployed: False` custom condition — direct copy of `NodeJSApplication`'s
   own `CicdOnboarded: False` mechanism, same accepted limitation (doesn't
   auto-clear once a developer's own follow-up PR sets a real `rollout.image`).
+
+**Built and live-verified for real 2026-08-15** (same day as the design above,
+different session): `cluster` is now a real required field, the cluster registry
+exists (`gitops-cluster-dev/00-bootstrap/cluster-registry/`), and `kind-prod` was
+bootstrapped as a real second cluster (`gitops-cluster-kind-prod`, reusing its
+pre-existing ArgoCD instance) specifically to prove both the rejection path
+(`crossplaneReady: "false"` → `ClusterReady: False`, zero resources created) and the
+success path (real commits, `kind-prod`'s own ArgoCD picking up the new tenant on
+its own, a real namespace/`ServiceAccount`/`NetworkPolicy`) end-to-end, not just in
+design. One real bug found live and fixed: the cluster's shared `app.yaml` can't use
+`spec.deletionPolicy: Orphan` as originally planned — `provider-upjet-github`
+v0.19.1's `RepositoryFile` CRD has no such field, confirmed via a real
+`ReconcileError` (`.spec.deletionPolicy: field not declared in schema`) plus
+`kubectl explain`. Fixed with `managementPolicies` excluding `"Delete"` instead, same
+intent, correct field for the actually-installed CRD schema. See
+`idp-service-catalog`'s own README and [[idp_session_applicationenvironment_xrd]]
+follow-on memory for the full detail.
 
 Also confirmed before building: `SLO`'s own Composition doesn't actually implement
 the "extra resources lookup" dependency-ordering mechanism described below — it's
