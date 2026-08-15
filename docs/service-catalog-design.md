@@ -421,7 +421,7 @@ env on the second cluster the same way. The `idp-onboarding` `AppProject` bounda
 attack-tested, not just asserted: a committed `Secret` was rejected with `resource
 :Secret is not permitted in project idp-onboarding`.
 
-Two real bugs found live during this build, one fixed and one still open:
+Two real bugs found live during this build:
 
 - **Fixed**: a directory-type `Application` source pointed straight at
   `xr-requests/` errors manifest generation entirely (`app path does not exist`) the
@@ -430,22 +430,30 @@ Two real bugs found live during this build, one fixed and one still open:
   pointing the source at the always-present `tenants/<app>` directory (guaranteed to
   exist — it's what the generator just matched) with `directory: {recurse: true,
   include: "xr-requests/*.yaml"}` instead of the subfolder directly.
-- **NOT fixed, confirmed twice live**: deleting an `ApplicationEnvironment` xr-request
-  through this `Application` deadlocks against the `Usage` it composes. The `Usage`'s
-  own controller refuses to release its finalizer until the `ApplicationEnvironment` is
-  actually gone (`WaitingUsingDeleted`); the `ApplicationEnvironment` picks up a k8s
-  `foregroundDeletion` finalizer and won't finish going away until that same `Usage` (an
-  owned, `blockOwnerDeletion: true` dependent) is gone first — circular. Every prior
-  live-verification pass of the `Usage` fix used a plain `kubectl delete` (background
-  propagation by default) and never hit this; this is the first deletion path that
-  actually goes through ArgoCD's own prune. `PrunePropagationPolicy=background` was
-  tried as a fix and did **not** resolve it when live-tested a second time — the
-  `foregroundDeletion` finalizer is added regardless, so the root cause isn't ArgoCD's
-  propagation choice. Recovery today requires manually clearing the `Usage` object's own
-  finalizer (`kubectl patch usage <name> -n <ns> --type=merge -p
-  '{"metadata":{"finalizers":[]}}'`) — **do not treat env deletion through `xr-requests/`
-  as routine until this is actually fixed**; root cause not yet isolated, worth its own
-  follow-up pass before this path is used for any real (non-throwaway) decommission.
+- **Suspected resolved, not proven — downgraded 2026-08-15 after 3 clean live
+  reproductions**: deleting an `ApplicationEnvironment` xr-request through this
+  `Application` was confirmed twice (2026-08-15 morning session) to deadlock against
+  the `Usage` it composes — the `Usage`'s own controller refuses to release its
+  finalizer until the `ApplicationEnvironment` is actually gone (`WaitingUsingDeleted`),
+  while the `ApplicationEnvironment` itself won't finish going away until that same
+  `Usage` (an owned, `blockOwnerDeletion: true` dependent) is gone first — circular.
+  `PrunePropagationPolicy=background` was tried as a fix and did not resolve it on a
+  same-day retest. A later same-day pass (afternoon) live-reproduced the same deletion
+  path **3 times, including one attempt matching the original failure's timing and
+  target cluster almost exactly** (`kind-prod`, ~13 minutes dwell before deletion, same
+  git-commit-removal path) — all 3 tore down cleanly with no manual finalizer-clearing.
+  No code change was made to the `Usage`/finalizer mechanism itself between the
+  confirmed failures and the clean runs. The one relevant thing that *did* change: a
+  real, separate ArgoCD Redis-cache staleness bug (see `gitops-cluster-dev`'s
+  `01-argocd/README.md`) was found and fixed immediately before the clean runs, and the
+  original failures happened during a session doing many rapid onboard/
+  teardown cycles — exactly the load that would build up stale ArgoCD cache state. This
+  is a plausible link, not a proven one; forcing a stale-cache condition deliberately
+  and re-testing would be needed to confirm causation. Recovery, if this ever recurs:
+  manually clear the `Usage` object's own finalizer (`kubectl patch usage <name> -n
+  <ns> --type=merge -p '{"metadata":{"finalizers":[]}}'`). Treat env deletion through
+  `xr-requests/` as usable but **monitor** rather than fully routine until this has more
+  soak time.
 
 **AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`,
 [[idp_session_phase2_holmesgpt]]) needs a real redesign here, not just more clusters to
