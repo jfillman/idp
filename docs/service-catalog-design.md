@@ -403,6 +403,50 @@ admission time (not a finalizer hang) while the env exists, confirmed the `Usage
 garbage-collected the moment the env is deleted, confirmed app deletion then succeeds
 — see `idp-service-catalog`'s own README (`v0.3.2`) for the full pass.
 
+**The `xr-requests/` mechanism itself (point 1 above) — built and live-verified
+2026-08-15.** `gitops-cluster-dev/02-argocd-apps/xr-requests/` adds a dedicated
+`ApplicationSet` (a git `directories` generator on `tenants/*`, not a `files` generator
+on `app.yaml` — gating XR creation on a file the XR itself produces would be circular)
+and a narrowly-scoped `idp-onboarding` `AppProject` (not `default`, not the per-app one
+— both are circular too for a brand-new app; scoped to just
+`NodeJSApplication`/`ApplicationEnvironment` from `gitops-cluster-dev-tenants` only,
+same shape as `platform-cicd`'s own `platform-onboarding` `AppProject`). Live-verified
+end-to-end, twice, with a real throwaway app (`xr-onboarding-verify`): a git commit
+into `tenants/<app>/xr-requests/nodejsapplication.yaml` created the `app-<app>-cicd`
+namespace and the XR, which provisioned real GitHub repos and committed `app.yaml`
+back, which the pre-existing `tenant-appprojects` `ApplicationSet` then turned into a
+real per-app `AppProject` — closing the loop with zero manual `kubectl apply` anywhere.
+A second commit (`applicationenvironment.yaml`, targeting `kind-prod`) deployed a real
+env on the second cluster the same way. The `idp-onboarding` `AppProject` boundary was
+attack-tested, not just asserted: a committed `Secret` was rejected with `resource
+:Secret is not permitted in project idp-onboarding`.
+
+Two real bugs found live during this build, one fixed and one still open:
+
+- **Fixed**: a directory-type `Application` source pointed straight at
+  `xr-requests/` errors manifest generation entirely (`app path does not exist`) the
+  moment its last file is removed, since git doesn't track empty directories — exactly
+  the moment a real deletion needs a clean diff to zero resources instead. Fixed by
+  pointing the source at the always-present `tenants/<app>` directory (guaranteed to
+  exist — it's what the generator just matched) with `directory: {recurse: true,
+  include: "xr-requests/*.yaml"}` instead of the subfolder directly.
+- **NOT fixed, confirmed twice live**: deleting an `ApplicationEnvironment` xr-request
+  through this `Application` deadlocks against the `Usage` it composes. The `Usage`'s
+  own controller refuses to release its finalizer until the `ApplicationEnvironment` is
+  actually gone (`WaitingUsingDeleted`); the `ApplicationEnvironment` picks up a k8s
+  `foregroundDeletion` finalizer and won't finish going away until that same `Usage` (an
+  owned, `blockOwnerDeletion: true` dependent) is gone first — circular. Every prior
+  live-verification pass of the `Usage` fix used a plain `kubectl delete` (background
+  propagation by default) and never hit this; this is the first deletion path that
+  actually goes through ArgoCD's own prune. `PrunePropagationPolicy=background` was
+  tried as a fix and did **not** resolve it when live-tested a second time — the
+  `foregroundDeletion` finalizer is added regardless, so the root cause isn't ArgoCD's
+  propagation choice. Recovery today requires manually clearing the `Usage` object's own
+  finalizer (`kubectl patch usage <name> -n <ns> --type=merge -p
+  '{"metadata":{"finalizers":[]}}'`) — **do not treat env deletion through `xr-requests/`
+  as routine until this is actually fixed**; root cause not yet isolated, worth its own
+  follow-up pass before this path is used for any real (non-throwaway) decommission.
+
 **AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`,
 [[idp_session_phase2_holmesgpt]]) needs a real redesign here, not just more clusters to
 run on.** Confirmed by reading the function's actual code: it currently watches

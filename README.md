@@ -77,6 +77,14 @@ admission webhook, not a finalizer hang) while any referencing env still exists 
 `docs/service-catalog-design.md` §0 for the full mechanism, `idp-service-catalog`
 `v0.3.2`.
 
+**§0's `xr-requests/` GitOps onboarding mechanism — built and live-verified
+2026-08-15**: `NodeJSApplication`/`ApplicationEnvironment` XRs are now created by a git
+commit into `gitops-cluster-dev-tenants/tenants/<app>/xr-requests/`
+(`gitops-cluster-dev/02-argocd-apps/xr-requests/`), not `kubectl apply` — see
+`docs/service-catalog-design.md` §0 for the full writeup, including a real, still-open
+deletion-ordering deadlock between ArgoCD prune and the `Usage` fix above (do not treat
+env deletion through this path as routine yet).
+
 First XRD up next — `NodeJSApplication`, the first Bootstrap-tier XRD (§ Framework's
 `provider-github` mechanism, §1/§2 of `service-catalog-design.md`). Its own
 CICD-onboarding-commit step (giving a new app a real dev-cluster Tekton pipeline) stays
@@ -96,7 +104,7 @@ Backstage integration (goal 7) not started.
 ```
 idp                        this repo — docs + running status
 gitops-cluster-dev          kind-dev's cluster config (Phase 1 done, live-verified)
-gitops-cluster-dev-tenants  kind-dev's app-onboarding requests (not started — needed for Phase 3's Bootstrap-tier XRDs)
+gitops-cluster-dev-tenants  kind-dev's app-onboarding requests - real xr-requests/ commits, live-verified 2026-08-15
 idp-cluster-baseline        shared cluster-config chart(s) (not started)
 idp-service-catalog         Crossplane XRDs/Compositions + the idp-application chart, tagged v0.1.0, pinned+synced via ArgoCD
 ```
