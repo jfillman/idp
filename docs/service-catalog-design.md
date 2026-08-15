@@ -899,6 +899,20 @@ not guessed:
   own `CicdOnboarded: False` mechanism, same accepted limitation (doesn't
   auto-clear once a developer's own follow-up PR sets a real `rollout.image`).
 
+**`env` opened up from a closed enum to team-chosen names, 2026-08-15.** Was
+`enum: ["dev", "staging", "prod"]` since the field's introduction — traced every real
+consumer (this Composition's own template, the `tenant-onboarding` `ApplicationSet`,
+the `AppProject`'s own `destinations` wildcard `app-<appName>-*`) and confirmed
+nothing branches on the specific value; it was always pure path/name interpolation
+(the k8s namespace `app-<appName>-<env>`, git paths `<cluster>/<env>/values.yaml` and
+`tenants/<appName>/<env>/identity.yaml`), never encoded business logic. Replaced the
+enum with a `pattern` matching Kubernetes' own DNS-1123 namespace-label rule plus
+`maxLength: 20`, so a value Kubernetes would reject still fails at XR admission with a
+clear message rather than downstream as an ArgoCD sync failure. Live-verified on
+`kind-dev`: a custom name (`perf-test`, previously impossible) reconciles end-to-end
+for real; an invalid one (`Staging!`) is rejected at admission with the expected
+pattern-mismatch error.
+
 **Built and live-verified for real 2026-08-15** (same day as the design above,
 different session): `cluster` is now a real required field, the cluster registry
 exists (`gitops-cluster-dev/00-bootstrap/cluster-registry/`), and `kind-prod` was
