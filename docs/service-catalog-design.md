@@ -374,21 +374,34 @@ controls cluster infrastructure, the lever is a more turnkey admin-run bootstrap
 (extending the existing `hack/bootstrap-upper-cluster.sh` precedent), not moving the
 trigger to the app side.
 
-**Fixes the real, twice-confirmed `AppProject`-deletion-ordering bug** (found live
-building `ApplicationEnvironment`, see `idp_session_applicationenvironment_xrd` — the
-two `ApplicationSet`s prune independently with no ordering between them, so deleting an
-`AppProject` before its dependent `Application` finishes its own finalizer cleanup
-permanently stuck that `Application`) — at the Crossplane layer, not the ArgoCD one,
-since ArgoCD's `ApplicationSet` doesn't expose an ordering primitive for this and
-teaching it one isn't obviously possible. `NodeJSApplication`'s Composition gains an
-extra-resources lookup checking for any remaining `ApplicationEnvironment` XRs
-referencing this app; while any exist, it refuses its own deletion (keeps its
-finalizer, reports a blocking condition) rather than letting `app.yaml`'s removal
-proceed. Crossplane's own watch-based reactivity means each child's deletion
-re-triggers a reconcile of the parent, so the moment the last `ApplicationEnvironment`
-is gone, the next reconcile sees zero remaining envs and lets deletion continue. This
-enforces "envs before app" as a real precondition instead of hoping two independent
-poll loops happen to race in the right order.
+**Fixes the real, twice-confirmed `AppProject`-deletion-ordering bug — built and
+live-verified 2026-08-15** (found live building `ApplicationEnvironment`, see
+`idp_session_applicationenvironment_xrd` — the two `ApplicationSet`s prune
+independently with no ordering between them, so deleting an `AppProject` before its
+dependent `Application` finishes its own finalizer cleanup permanently stuck that
+`Application`) — at the Crossplane layer, not the ArgoCD one, since ArgoCD's
+`ApplicationSet` doesn't expose an ordering primitive for this and teaching it one
+isn't obviously possible. Originally planned as a homegrown extra-resources lookup on
+`NodeJSApplication`'s own Composition (query for remaining `ApplicationEnvironment`
+XRs, refuse deletion if any exist) — superseded before building it once `kubectl
+api-resources` on `kind-dev` confirmed Crossplane itself already ships a real
+primitive for exactly this: `protection.crossplane.io/v1beta1` `Usage` ("defines a
+deletion blocking relationship between two resources"), enforced by a live
+`crossplane-no-usages` admission webhook already installed with this cluster's
+Crossplane — nothing new to deploy. `ApplicationEnvironment`'s own Composition now
+composes one, unconditionally (not gated by the `$clusterOk` cluster-registry check
+elsewhere in the same template — the app/env relationship holds regardless of
+deployment-gate status): `spec.of` = the parent `NodeJSApplication` (by
+`spec.appName`), `spec.by` = the `ApplicationEnvironment` XR itself. `
+NodeJSApplication`'s own Composition needed **zero** changes — a real simplification
+versus the original design, since the webhook and Usage controller do all the
+blocking purely by watching `Usage` objects, regardless of what composed them.
+Live-verified end-to-end on `kind-dev`: a real `NodeJSApplication` + referencing
+`ApplicationEnvironment`, confirmed the `Usage` object and the `crossplane.io/in-use`
+label it drives, confirmed `kubectl delete` on the app is cleanly rejected at
+admission time (not a finalizer hang) while the env exists, confirmed the `Usage` is
+garbage-collected the moment the env is deleted, confirmed app deletion then succeeds
+— see `idp-service-catalog`'s own README (`v0.3.2`) for the full pass.
 
 **AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`,
 [[idp_session_phase2_holmesgpt]]) needs a real redesign here, not just more clusters to
@@ -823,12 +836,15 @@ it alongside the src repo, at the one moment both are being bootstrapped togethe
 a "which of possibly-several env Claims owns the shared repo" ownership question with no
 clean answer under Crossplane's per-Claim resource ownership model.
 
-**Not yet built, resolved 2026-08-15 for a fleet with more than one dev cluster** — see
-"Where Crossplane runs across a multi-cluster fleet" in §0 for the full reasoning: a
-required, creation-immutable `devCluster` field (gated against the new cluster
-registry — `type: dev` + `cicdReady`), and an extra-resources lookup blocking this XR's
-own deletion while any `ApplicationEnvironment` children still exist (the real fix for
-the `AppProject`-deletion-ordering bug found live building item 3).
+**Still not built**: a required, creation-immutable `devCluster` field (gated against
+the new cluster registry — `type: dev` + `cicdReady`), designed 2026-08-15 — see
+"Where Crossplane runs across a multi-cluster fleet" in §0 for the full reasoning.
+
+**The `AppProject`-deletion-ordering bug fix, also designed 2026-08-15, is built and
+live-verified** — but it doesn't touch this XRD/Composition at all, contrary to the
+original plan recorded here. It's a `protection.crossplane.io` `Usage` composed by
+`ApplicationEnvironment`'s own Composition instead (§0 has the full mechanism and
+live-verification detail) — `NodeJSApplication` needed zero changes.
 
 ## Item 3: `ApplicationEnvironment` (renamed from `UpperEnv`)
 

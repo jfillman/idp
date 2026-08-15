@@ -70,8 +70,12 @@ Verified with a throwaway tenant, including a live `AppProject` boundary rejecti
 (`InvalidSpecError`, same mechanism already proven in `platform-cicd`) — see
 `gitops-cluster-dev`'s own README for the real deletion-ordering bug this surfaced
 (pruning an `AppProject` before its dependent `Application`'s own finalizer finishes
-permanently stuck that `Application` — worked around by clearing the finalizer by hand
-for the throwaway case, not yet a designed fix).
+permanently stuck that `Application`). **Fixed and live-verified 2026-08-15**: a
+`protection.crossplane.io` `Usage`, composed by `ApplicationEnvironment`'s own
+Composition, blocks `NodeJSApplication` deletion (via a real, already-installed
+admission webhook, not a finalizer hang) while any referencing env still exists — see
+`docs/service-catalog-design.md` §0 for the full mechanism, `idp-service-catalog`
+`v0.3.2`.
 
 First XRD up next — `NodeJSApplication`, the first Bootstrap-tier XRD (§ Framework's
 `provider-github` mechanism, §1/§2 of `service-catalog-design.md`). Its own
