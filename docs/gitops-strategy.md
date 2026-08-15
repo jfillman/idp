@@ -437,16 +437,28 @@ this doc:
 Two places this doc deliberately stops short, both flagged so the GitOps layer doesn't
 paint them into a corner later:
 
-- **Where Crossplane itself runs** (hub-and-spoke on one management cluster vs. one
-  Crossplane install per cluster) is a control-plane question (goal 2 in your list), not
-  a GitOps-topology one — `10-crds-operators/` in §3 assumes per-cluster for now (matches
-  the "no cross-cluster credential" constraint most directly) but this needs its own pass
-  once the service-catalog design starts.
-- **AI-triage hooks (goal 9)**: the sync-hook → relay → CDEvents pattern already proven
-  for release outcomes (§7) is a structural fit for "a degraded deployment spawns a
-  triage workflow" — a `SyncFail` (or a Crossplane composition function watching for a
-  degraded XR) is just another CDEvents producer once it exists. Not built here; noted so
-  the eventing shape stays compatible with it.
+- **Where Crossplane itself runs — resolved 2026-08-15**, see
+  `service-catalog-design.md` §0 "Where Crossplane runs across a multi-cluster fleet"
+  for the full reasoning. Neither hub-and-spoke nor uniform per-cluster: it's
+  tier-dependent. Bootstrap-tier XRDs (`NodeJSApplication`/`ApplicationEnvironment`)
+  centralize on one dev cluster permanently, regardless of fleet size, since they only
+  ever write git commits (`provider-github`), never touch any cluster's K8s API.
+  Attached-tier XRDs (`SLO` and friends) genuinely need `10-crds-operators/`'s original
+  per-cluster assumption, since they compose native in-cluster resources directly — no
+  meaning without Crossplane actually running where the resource lands. A new
+  cluster-admin-owned cluster registry (a labeled `ConfigMap` per cluster, `type:
+  dev|upper` + readiness flags) is what makes a per-app cluster choice
+  (`NodeJSApplication.spec.devCluster`, `ApplicationEnvironment.spec.cluster`)
+  checkable against real fleet state.
+- **AI-triage hooks (goal 9) — partially resolved 2026-08-15.** The sync-hook → relay →
+  CDEvents pattern proven for release outcomes (§7) remains the right structural fit,
+  still not built. Separately, `service-catalog-design.md` §0 resolves *where* the
+  existing `function-rollout-watcher`/HolmesGPT mechanism (already built,
+  [[idp_session_phase2_holmesgpt]]) needs to run in a multi-cluster fleet — same
+  per-cluster requirement as Attached-tier XRDs, plus a real redesign (extra-resources
+  watch of an already-Helm-created Rollout, not same-XR composition) needed regardless
+  of cluster count. Whether Holmes itself runs per-cluster or stays a shared instance
+  with per-cluster-scoped credentials is flagged there as its own still-open follow-on.
 
 ## Open questions for discussion
 

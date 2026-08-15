@@ -249,6 +249,178 @@ naming pass ever happens for independent reasons, "control" or "platform" would 
 more literal name for the role this namespace has always actually played — worth
 remembering then, not a reason to act now.
 
+### Where Crossplane runs across a multi-cluster fleet (resolved 2026-08-15)
+
+Closes the doc's own opening claim ("resolves the one thing `gitops-strategy.md`
+deliberately deferred... where Crossplane actually runs") for real, once a fleet with
+more than one dev cluster and real upper-env clusters is on the table (a second, real
+`kind-prod` cluster now exists for testing this). Reasoning worked through live in
+conversation, not asserted — kept here so it isn't lost:
+
+**The two XRD tiers have different locality requirements, and that difference is the
+whole answer.** Bootstrap-tier (`NodeJSApplication`, `ApplicationEnvironment`) composes
+*only* `provider-github` resources — every mutation is a GitHub API call, never a
+Kubernetes API call to any cluster. Attached-tier (`SLO` today; `Redis`/`OAuthServer`/
+`Database`/`Queue` once built) composes *native, in-cluster* resources directly (`SLO`'s
+Composition renders a real `PrometheusServiceLevel` into whichever cluster it's
+reconciled on) — that has no meaning unless Crossplane is actually running there.
+
+- **Bootstrap-tier stays centralized on one dev cluster, permanently, regardless of
+  fleet size.** There is nothing about creating a GitHub repo or committing a file that
+  benefits from running per-cluster, and running N copies of the same Composition
+  against N clusters would just create N controllers racing to own the same repo.
+- **Attached-tier (and, see below, AI-triage) must run per-cluster** — on every cluster
+  that hosts real app deployments, dev and upper-env alike. This was always implied by
+  how `SLO` already works; it just had nothing to contradict it while only one cluster
+  existed.
+
+**A cluster registry is the missing piece that makes any of this checkable**, once
+there's more than one cluster of either kind. A small, cluster-admin-authored,
+PR-reviewed object per cluster — a labeled `ConfigMap` is enough, no new CRD needed
+(matches the low-ceremony, operator-authored-data pattern this doc already uses for
+`tenants/*/app.yaml`):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kind-prod          # cluster name
+  namespace: crossplane-system
+  labels: {platform.io/cluster-registry: "true"}
+data:
+  type: upper              # dev | upper
+  cicdReady: "false"       # dev only - flips once that cluster's CICD control plane is live
+  crossplaneReady: "false" # both types - flips once Crossplane + the Attached-tier
+                            # catalog subset is installed and healthy there
+```
+
+Both readiness flags are **manual, PR-reviewed attestations**, not automated health
+probes — same "CI gates are lint/syntax, human review carries the real weight"
+philosophy `gitops-strategy.md` §8 already applies to cluster config generally, and
+consistent with [[feedback_live_verification]]'s standing caution against trusting a
+passing check without confirming the thing it's gating is actually on. An automated
+probe could report *into* this as a second opinion later; it shouldn't be the sole gate.
+Registering a cluster (adding its entry) and bringing it fully online (§4's bootstrap
+sequence, extended to also install the Attached-tier catalog once `10-crds-operators`
+includes Crossplane) stay the same cluster-admin action — the registry doesn't invent
+new toil, it just makes the fact checkable.
+
+**`NodeJSApplication` gains a required `devCluster` field**, validated via an
+extra-resources lookup against this registry (must resolve to `type: dev` +
+`cicdReady: "true"`, or the Composition creates nothing and reports a blocking
+condition — same "structural backstop, refuse rather than partially succeed"
+instinct already used for `WorkloadDeployed`/`CicdOnboarded`). **Immutable once set** —
+a CEL transition rule (`self.devCluster == oldSelf.devCluster`, rejected after
+creation), not a mutable field Crossplane would try to reconcile toward. `devCluster`
+isn't just "which tenants repo `app.yaml` lands in" — it's which cluster's CICD control
+plane owns the app's pipeline history/secrets/webhooks, and which cluster's own
+lower-env (§10) `ApplicationSet` live-reads this app's `platform/envs/`. None of that is
+something a declarative reconcile loop can safely migrate; a spec-field change would at
+best orphan everything on the old cluster while partially standing up a new one, not
+actually move anything. Moving an app to a different dev cluster is a deliberate
+decommission-and-re-onboard (delete `NodeJSApplication`, which per the fix below already
+can't happen until every `ApplicationEnvironment` child is gone — then create a new one),
+not a field edit.
+
+**`ApplicationEnvironment`'s `cluster` field stops being a hardcoded Composition
+constant and becomes a real, required spec field**, gated the same way: extra-resources
+lookup against the registry, must resolve to `type: upper` + `crossplaneReady: "true"`.
+**Explicitly rejecting `type: dev` targets is a real, load-bearing enforcement, not just
+tidiness** — §10 of `gitops-strategy.md` is explicit that `gitops-<app-name>` (which
+`ApplicationEnvironment` writes into) carries upper environments *only*; a dev cluster's
+environments belong to the separately-scoped `platform/envs/`-live-read mechanism
+instead, with its own narrower `AppProject`. Nothing currently stops `ApplicationEnvironment`
+from targeting a dev cluster — it's only ever pointed at `kind-dev` today because that's
+the sole cluster that exists, not because anything enforces the boundary. This closes
+that gap once the registry exists to check against.
+
+One more real gap the registry surfaces: **the first `ApplicationEnvironment` for a
+given (app, cluster) pair must also seed that cluster's own `app.yaml`-equivalent
+tenant entry, not just `identity.yaml`.** §6 scopes `AppProject` per cluster — an app
+deployed to three clusters gets three independently-generated `AppProject`s, each built
+by that cluster's own `tenant-appprojects` from that cluster's own `app.yaml`.
+`NodeJSApplication` only ever writes the `devCluster`'s copy; every other cluster an app
+gets deployed to needs its own, and `ApplicationEnvironment` is the only thing that ever
+learns about a new cluster for an app, so it's the natural (idempotent,
+`overwriteOnCreate: true`, same as everywhere else) place to seed it.
+
+**`AppProject`/`Application` ownership stays with ArgoCD's `ApplicationSet`s
+(cluster-admin-templated), not moved into direct Crossplane composition** — considered
+and rejected, for two compounding reasons. First, it's structurally incompatible with
+Bootstrap-tier staying centralized: `ApplicationEnvironment` targeting an upper-env
+cluster runs on the dev cluster's Crossplane, which has no credential to that upper-env
+cluster's API and structurally shouldn't get one — direct composition would require
+exactly the cross-cluster credential the guiding constraint forbids, or force
+Bootstrap-tier to un-centralize after all. Second, `AppProject.sourceRepos`/
+`destinations` is the actual security enforcement boundary (§6) — its shape is
+deliberately authored in `gitops-cluster-<name>`, a repo `gitops-strategy.md` keeps
+"close to read-only... rare, high-stakes... real review weight," owned by cluster
+admins. Letting a Composition generate that shape directly would move the security
+boundary's definition into `idp-service-catalog`'s own release cadence instead — a
+different, less rigorous bar than the one `gitops-strategy.md` deliberately wants for
+anything that shapes an `AppProject`.
+
+The same reasoning extends to a related idea considered and set aside: having
+`ApplicationEnvironment` itself trigger installation of the Attached-tier catalog onto a
+new cluster (e.g. by committing into that cluster's `gitops-cluster-<name>`) the first
+time an app targets it. Appealing (removes a manual step), but it's the same
+ownership-boundary cross one level further down the stack — an app-owner-facing XRD
+would be expanding what's installed on a cluster, which `gitops-strategy.md`'s own
+terminology section assigns to cluster admins exclusively ("app owner... never touches
+cluster config"). `crossplaneReady` in the registry is the alternative that gets most of
+the practical value (a single checkable fact `ApplicationEnvironment` gates on) without
+crossing it — if the real goal is reducing cluster-admin toil rather than shifting who
+controls cluster infrastructure, the lever is a more turnkey admin-run bootstrap script
+(extending the existing `hack/bootstrap-upper-cluster.sh` precedent), not moving the
+trigger to the app side.
+
+**Fixes the real, twice-confirmed `AppProject`-deletion-ordering bug** (found live
+building `ApplicationEnvironment`, see `idp_session_applicationenvironment_xrd` — the
+two `ApplicationSet`s prune independently with no ordering between them, so deleting an
+`AppProject` before its dependent `Application` finishes its own finalizer cleanup
+permanently stuck that `Application`) — at the Crossplane layer, not the ArgoCD one,
+since ArgoCD's `ApplicationSet` doesn't expose an ordering primitive for this and
+teaching it one isn't obviously possible. `NodeJSApplication`'s Composition gains an
+extra-resources lookup checking for any remaining `ApplicationEnvironment` XRs
+referencing this app; while any exist, it refuses its own deletion (keeps its
+finalizer, reports a blocking condition) rather than letting `app.yaml`'s removal
+proceed. Crossplane's own watch-based reactivity means each child's deletion
+re-triggers a reconcile of the parent, so the moment the last `ApplicationEnvironment`
+is gone, the next reconcile sees zero remaining envs and lets deletion continue. This
+enforces "envs before app" as a real precondition instead of hoping two independent
+poll loops happen to race in the right order.
+
+**AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`,
+[[idp_session_phase2_holmesgpt]]) needs a real redesign here, not just more clusters to
+run on.** Confirmed by reading the function's actual code: it currently watches
+`req.observed.resources["rollout"]` — the Rollout composed by *step 1 of its own
+pipeline* (the old `ai-rollout`-derived `Application` XRD, which renders the Rollout
+directly). But the deployment mechanism that actually got built, `idp-application`
+rendered by Helm via ArgoCD, never gives Crossplane a hand in creating the Rollout at
+all — there's no live XR for this function to attach to in the real model. (The
+function's own README already names this as a known gap; it isn't new here, just newly
+relevant.) Fix: switch from same-XR composition to an **extra-resources lookup** — a
+small, always-on Attached-tier-shaped resource (`RolloutWatch`) `idp-application`
+renders unconditionally alongside any release with `rollout:` set (same treatment as
+`ServiceMonitor` — not a developer-selected `components:` entry), whose Composition
+observes the *already-existing* Rollout Helm created (by name/namespace convention) and
+composes the diagnosis `Job` only, which it legitimately owns creating. Carries
+`environmentRef` like every other Attached-tier resource; gets its gitops/src repo
+coordinates from `NodeJSApplication`'s own `appRepoUrl` field (already committed to
+`app.yaml`) instead of the current per-XR annotation scheme. Runs per-cluster, riding
+the same Attached-tier catalog install as everything else in this section — no separate
+mechanism needed. **Not resolved here, flagged as real follow-on work**: Holmes itself
+needs live in-cluster access to diagnose anything (pod logs, events), so a single shared
+Holmes instance has the same locality problem one level further out — whether that
+means Holmes runs per-cluster too, or stays shared with per-cluster-scoped credentials,
+needs its own pass.
+
+**Nothing above is buildable yet against a second dev cluster** — no second dev cluster
+exists — **but `kind-prod` now exists for testing the upper-env half**: the registry,
+`ApplicationEnvironment.spec.cluster` becoming real, the `type: upper`/`crossplaneReady`
+gating, and the first-time `app.yaml` seeding are all live-testable against it once
+implemented.
+
 ## §1. `provider-github` is the mechanism behind every "create/commit to a repo" step
 
 Category-1 XRDs (§0) need to create a GitHub repo and commit files into it, without a
@@ -646,6 +818,13 @@ it alongside the src repo, at the one moment both are being bootstrapped togethe
 a "which of possibly-several env Claims owns the shared repo" ownership question with no
 clean answer under Crossplane's per-Claim resource ownership model.
 
+**Not yet built, resolved 2026-08-15 for a fleet with more than one dev cluster** — see
+"Where Crossplane runs across a multi-cluster fleet" in §0 for the full reasoning: a
+required, creation-immutable `devCluster` field (gated against the new cluster
+registry — `type: dev` + `cicdReady`), and an extra-resources lookup blocking this XR's
+own deletion while any `ApplicationEnvironment` children still exist (the real fix for
+the `AppProject`-deletion-ordering bug found live building item 3).
+
 ## Item 3: `ApplicationEnvironment` (renamed from `UpperEnv`)
 
 Naming and mechanism, both addressed:
@@ -678,14 +857,19 @@ applicationenvironment.yaml`, `compositions/applicationenvironment/`). Two desig
 calls resolved concretely, both confirmed against already-live code before deciding,
 not guessed:
 
-- **`cluster` stays a fixed Composition constant (`"kind-dev"`), not a spec field** —
+- ~~**`cluster` stays a fixed Composition constant (`"kind-dev"`), not a spec field** —
   confirmed the already-built `tenant-onboarding` ApplicationSet
   (`gitops-cluster-dev/02-argocd-apps/tenant-onboarding/applicationset.yaml`) already
   hardcodes the same literal in two places (`valuesObject.cluster` and its
   `valueFiles` path); there's no real multi-cluster wiring anywhere downstream yet to
   make a spec field meaningful. Matches `NodeJSApplication`'s own precedent
-  (`platformOwner`/`tenantsRepo` as fixed constants). Revisit once a second cluster's
-  own `tenant-onboarding` ApplicationSet actually exists.
+  (`platformOwner`/`tenantsRepo` as fixed constants).~~ **Superseded 2026-08-15**, now
+  that a second, real upper-env cluster (`kind-prod`) exists to design and test
+  against: `cluster` becomes a required spec field, gated via the new cluster registry
+  (`type: upper` + `crossplaneReady`) — explicitly rejecting `type: dev` targets, since
+  §10 scopes `gitops-<app-name>` to upper environments only. See "Where Crossplane runs
+  across a multi-cluster fleet" in §0 for the full reasoning (also covers the
+  first-time-on-a-cluster `app.yaml`-seeding gap this surfaces).
 - **Initial `values.yaml` is an identity-only stub, `rollout: null`** — this
   platform's CICD control plane isn't running on `kind-dev` yet, so there's no real
   image to deploy at XR-creation time. Rather than seed a placeholder image that
