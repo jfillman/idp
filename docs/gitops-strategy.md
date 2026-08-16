@@ -160,6 +160,18 @@ cluster admin's actions land through `argocd-platform`, entirely inside
 `gitops-cluster-<name>`. Neither instance's RBAC nor its watched repo overlaps with the
 other's.
 
+**Refinement, live-verified 2026-08-16**: `argocd-platform` additionally watches every
+tenant's own `<type>-<app-name>-cicd` namespace (ArgoCD's ApplicationSet-in-any-namespace
+feature, `application.namespaces`/`applicationsetcontroller.namespaces` scoped to a
+`*-cicd` glob) so `platform-cicd`'s own onboarding-generated resources (a per-app
+ApplicationSet, a GitHub-token Secret, matching RBAC — see `platform-cicd`'s
+`docs/ephemeral-environments.md`) can live colocated with the rest of that namespace's
+chart-rendered resources instead of needing a cross-namespace grant into `argocd`. This
+doesn't cross the `argocd-apps` boundary or widen either instance's privilege - `-cicd`
+namespaces are already `argocd-platform`'s to create/RBAC (§3's "bootstrap namespaces/
+RBAC" line above), the same category as `00-bootstrap/`, just generated per-tenant
+instead of once. `argocd-apps`'s own config is untouched.
+
 ## 3. Logical groupings inside a cluster's config (requirement 7)
 
 `gitops-cluster-<name>` (thin — mostly version pins into `idp-cluster-baseline` plus
