@@ -854,21 +854,29 @@ This split maps directly onto the lower/upper security boundary already designed
 everything these two XRDs do is inherently dev-cluster, self-service, no-review-gate-needed
 territory; promoting to a real environment is a deliberately separate, higher-trust action.
 
-**Status: `NodeJSApplication` built 2026-08-13** (`idp-service-catalog/xrds/
-nodejsapplication.yaml`, `compositions/nodejsapplication/`), live-verified on `kind-dev`.
-Real, load-bearing gap found building it, not assumed here: the "CICD onboarding" half of
-this scope genuinely can't complete yet, because `platform-cicd`'s control plane isn't
-running on `kind-dev` (separate, already-scoped migration task). The Composition still
-does everything else (real src/`gitops-<app-name>` repos, real boilerplate, real
-`tenants/<app-name>/app.yaml` commit) and surfaces the gap as an explicit custom
-condition (`CicdOnboarded: False`, reason `CicdOnboardingPending`) rather than silently
-succeeding or blocking — **not** an override of the standard `Ready` condition, which
+**Status: `NodeJSApplication` built 2026-08-13**, live-verified on `kind-dev`
+(`idp-service-catalog/xrds/nodejsapplication.yaml`, `compositions/nodejsapplication/`).
+At build time, the "CICD onboarding" half of this scope genuinely couldn't complete
+yet — `platform-cicd`'s control plane wasn't running on `kind-dev` — so the Composition
+surfaced the gap as an explicit custom condition (`CicdOnboarded: False`, reason
+`CicdOnboardingPending`) rather than silently succeeding or blocking. **Real as of
+2026-08-15**: `platform-cicd`'s control plane now runs as a second, independent instance
+on `kind-dev` (see `platform-cicd/docs/bootstrap.md`'s own note), and the Composition
+gained a real step committing `tenants/<app-name>/identity.yaml` into
+`platform-cicd-kind-dev-tenants` — `platform-cicd`'s own tenant-onboarding
+`ApplicationSet` picks it up and stands up the app's actual CICD pipeline.
+`CicdOnboarded` now reflects the real observed status of that commit (`True` once it's
+Ready), not a hardcoded `False` — live-verified end-to-end with a throwaway app,
+including a real signed build (genuine `.att` OCI attestation in the registry, Fulcio
+cert chained to `kind-dev`'s own independently-generated root CA — not just the
+`chains.tekton.dev/signed: "true"` annotation, which has lied on this platform before).
+Custom condition, not an override of the standard `Ready` condition, which
 `function-go-templating` reserves and errors on if a Composition tries to set it
 directly (confirmed live; the framework's own custom-condition mechanism, target
-`CompositeAndClaim`, is the supported way to surface exactly this kind of "everything
-else succeeded except X" case). `SpringBootApplication` isn't built. `BranchProtection`
-was also deliberately left out of this pass — it would need to reference status-check
-names from a CICD pipeline that doesn't exist here yet, same root cause.
+`CompositeAndClaim`, is the supported way to surface this). `SpringBootApplication` isn't
+built. `BranchProtection` was also deliberately left out of this pass — it would need to
+reference status-check names from a CICD pipeline, and while one now exists, wiring
+`BranchProtection` itself to it is still separate, unstarted work.
 
 Live verification (real `kubectl apply`, throwaway `nodejsapp-verify-test`) produced two
 real corrections, not assumed in the original design — see §1 for the full detail: the
@@ -943,12 +951,14 @@ not guessed:
   §10 scopes `gitops-<app-name>` to upper environments only. See "Where Crossplane runs
   across a multi-cluster fleet" in §0 for the full reasoning (also covers the
   first-time-on-a-cluster `app.yaml`-seeding gap this surfaces).
-- **Initial `values.yaml` is an identity-only stub, `rollout: null`** — this
-  platform's CICD control plane isn't running on `kind-dev` yet, so there's no real
-  image to deploy at XR-creation time. Rather than seed a placeholder image that
-  would sit in permanent `ImagePullBackOff`, the Composition reports a sibling
-  `WorkloadDeployed: False` custom condition — direct copy of `NodeJSApplication`'s
-  own `CicdOnboarded: False` mechanism, same accepted limitation (doesn't
+- **Initial `values.yaml` is an identity-only stub, `rollout: null`** — no real image
+  exists to deploy at XR-creation time regardless of CICD control-plane availability
+  (`platform-cicd` now runs on `kind-dev` as of 2026-08-15, but a real image only
+  exists once a developer's own push actually completes a real release through it).
+  Rather than seed a placeholder image that would sit in permanent `ImagePullBackOff`,
+  the Composition reports a sibling `WorkloadDeployed: False` custom condition — same
+  mechanism `NodeJSApplication`'s own `CicdOnboarded` condition used before that one
+  went real (see Item 1/2's own status note), same accepted limitation (doesn't
   auto-clear once a developer's own follow-up PR sets a real `rollout.image`).
 
 **`env` opened up from a closed enum to team-chosen names, 2026-08-15.** Was
