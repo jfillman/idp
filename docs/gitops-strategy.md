@@ -1,7 +1,8 @@
 # GitOps strategy
 
-**Status: structural design resolved (2026-08-12), one forward-looking item remains
-(§10).** This is the first design doc for Dream
+**Status: structural design resolved (2026-08-12). §10 built and live-verified
+2026-08-16** (see that section's own status note for the mechanism and what was
+proven). This is the first design doc for Dream
 IDP ([[project-dream-idp]] in `platform-cicd`'s memory), which absorbs `platform-cicd` as
 one component rather than replacing it. Where this doc extends a pattern already
 live-verified in `platform-cicd`, it says so and links to the source doc — the intent is
@@ -369,6 +370,74 @@ Two rules carried forward, both already established preferences, not new ones:
   rather than a separately-scheduled task.
 
 ## 10. Lower vs. upper environments — a real security boundary, not just a naming split
+
+**Built and live-verified 2026-08-16**, prompted by a real bug: a `NodeJSApplication`
+(`nodejs-demo-app`) onboarded with `cicd.yaml` declaring
+`deploy.lowerEnvironments: [dev]`, and nothing ever provisioned that namespace -
+`ApplicationEnvironment` structurally refuses `kind-dev` targets by design (this
+section's whole point), so `platform-cicd`'s chart-rendered `Role`/`RoleBinding` for
+that env sat permanently `OutOfSync` (`namespaces "app-nodejs-demo-app-dev" not
+found`). One real correction to how this section is phrased below: "`argocd-apps`...
+gets a second `ApplicationSet`" reads as one platform-wide ApplicationSet - not
+achievable, since a `git` `files` generator only ever has one static `repoURL`, and
+each app's `platform/envs/` lives in a *different* repo. What's actually built is
+**one `ApplicationSet` per app**, generated dynamically by
+`gitops-cluster-dev/02-argocd-apps/tenant-appprojects`'s own chart (it already fires
+once per app) alongside the second, narrower `AppProject` this section calls for -
+same "render a resource ApplicationSet can't generate directly via an Application +
+chart" trick already used for the per-app `AppProject`, extended one level further.
+Live-verified: both new objects (`<app>-lower` `AppProject`,
+`<app>-lower-envs` `ApplicationSet`) sync healthy per app; the `AppProject`
+rejection boundary was proven with two throwaway `Application`s (one pointed at
+`gitopsRepoUrl`, deliberately excluded from `sourceRepos`; one pointed at a
+non-matching `destination.namespace`) - both hard-rejected with a clear
+`InvalidSpecError`, not just shaped like the right YAML. **Caveat, not fully
+tested**: the *cross-cluster* half of this boundary (pointing a lower-env
+`Application` at a prod namespace) is currently structurally unreachable rather than
+`AppProject`-tested - neither ArgoCD instance in this fleet has any other cluster
+registered as a destination (`argocd.argoproj.io/secret-type: cluster`) today, so
+there's nothing to actually attempt this against yet.
+
+A real `platform/envs/dev.yaml` committed to `nodejs-demo-app`'s own repo (playing
+the "developer self-serves" role this section describes) closed the original bug
+end to end: `app-nodejs-demo-app-dev` got provisioned for real (`ServiceAccount` +
+`NetworkPolicy`, `Synced`/`Healthy`), and the previously-stuck `Role`/`RoleBinding`
+in that Application's *sibling* CICD-onboarding `Application` (a separate ArgoCD
+project entirely, `platform-cicd`'s own `tenant-onboarding`) now has a real
+namespace to sync into - confirmed by re-checking it directly, though by the time
+this landed, an unrelated edit to that app's own `cicd.yaml` had already dropped
+`dev` from `lowerEnvironments`, which independently cleared the original symptom
+too. The mechanism itself was still verified for real, not inferred from that
+coincidence: namespace creation, `AppProject`/`ApplicationSet` health, and the
+rejection tests above all confirm it end to end.
+
+Three real bugs found live getting the `platform/envs/*.yaml` → `idp-application`
+plumbing working, none obvious from ArgoCD's docs alone:
+
+1. **The git `files` generator's `path` param is a map, not a string.**
+   `{{.path}}` alone (a first attempt at "the matched file's directory") renders Go's
+   default map stringification (`map[basename:... filename:dev.yaml
+   path:platform/envs segments:[platform envs]]`) into the `Application` spec, not a
+   clean path - real, live `ComparisonError`. `{{.path.path}}` is the map's own
+   directory-string field; concatenated with `{{.path.filename}}` (the bare matched
+   filename) gives the real full path a `valueFiles` `$ref` needs
+   (`$appsrc/{{.path.path}}/{{.path.filename}}`) - there's no single convenience
+   field for the whole thing.
+2. **`env:` collides with `idp-application`'s own reserved `env:` key.** The
+   self-describing field this tier's own files use to name themselves (mirroring
+   `<env>/identity.yaml`'s `env:` convention) can't be called `env:` here, because
+   unlike `identity.yaml` this file *also* gets fed straight into
+   `idp-application`'s Helm values as a `valueFiles` entry - where `env:` already
+   means the chart's Embedded-tier container env-var list. A real
+   `env: dev` produced a live `range can't iterate over dev` Helm error inside that
+   chart's `workloadEnv` helper. `envName:` (matching the chart's own field name -
+   its `values.yaml` already documents choosing that name for exactly this reason)
+   is correct instead.
+3. **The chart's own `rollout:` default isn't `null`.** Leaving `rollout:` out of
+   `platform/envs/dev.yaml` entirely (intending the same "no image yet" bootstrap
+   stub `ApplicationEnvironment` uses) let the chart's own default `rollout:` value
+   (non-null, empty `image.repository`/`tag`) render a real `Rollout` with two
+   `InvalidImageName` pods. `rollout: null` has to be explicit.
 
 Your instinct here is right, and it's a direct extension of a boundary this doc already
 draws for a different reason: `gitops-<app-name>` (§5) is the reviewed, release-gated
