@@ -864,7 +864,12 @@ surfaced the gap as an explicit custom condition (`CicdOnboarded: False`, reason
 on `kind-dev` (see `platform-cicd/docs/bootstrap.md`'s own note), and the Composition
 gained a real step committing `tenants/<app-name>/identity.yaml` into
 `platform-cicd-kind-dev-tenants` — `platform-cicd`'s own tenant-onboarding
-`ApplicationSet` picks it up and stands up the app's actual CICD pipeline.
+`ApplicationSet` picks it up and stands up the app's actual CICD pipeline. **Redirected
+2026-08-16** (`idp-service-catalog` v0.3.5): that dedicated repo was eliminated once
+live history showed it only ever held throwaway apps and `kind-dev`'s platform-cicd
+instance was confirmed idp-exclusive - the same commit now lands in
+`gitops-cluster-dev-tenants` instead, alongside `app.yaml`. See that repo's own README
+and `cicd-identity-yaml.yaml`'s own header comment for the full reasoning.
 `CicdOnboarded` now reflects the real observed status of that commit (`True` once it's
 Ready), not a hardcoded `False` — live-verified end-to-end with a throwaway app,
 including a real signed build (genuine `.att` OCI attestation in the registry, Fulcio
