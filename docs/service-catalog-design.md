@@ -1279,28 +1279,44 @@ Sources: [Argo CD Resource Health docs](https://argo-cd.readthedocs.io/en/latest
 (§3, chart built) — a standalone `infra`-type component (§ Components) reuses the exact
 same chart, no second sibling chart needed.
 
+**Resolved 2026-08-17**: Item 8 built and live-verified end-to-end
+(`idp-service-catalog`'s `xrds/secretstore.yaml` +
+`compositions/secretstore/` + `operators/infisical-secretstore-operator/`).
+Neither a native `provider-infisical` nor `provider-terraform` was used in the
+end — no mature native provider exists (only an open feature request,
+Infisical/infisical#3240), and a small purpose-built kopf/Python controller
+against Infisical's real REST API turned out to be the better fit than
+Terraform's state/HCL overhead, matching this project's existing convention of
+small first-party Python controllers over heavier general-purpose tools (see the
+operator's own README for the full "Q1" reasoning). Real chain proven live: a
+`SecretStore` XR → a real Infisical project + environment + machine identity +
+Universal Auth credentials → a `Ready: True` `ClusterSecretStore` (wrapped in a
+`provider-kubernetes` `Object` - Crossplane v2 rejects composing a cluster-scoped
+resource directly from this namespaced XR, same fix `NodeJSApplication`'s
+`provider-github` already needed) → a real secret pulled through into a real K8s
+Secret. **Still not built**: wiring into `ApplicationEnvironment`'s
+auto-provisioning (create-on-first-env-for-a-cluster, reference on later ones) -
+this XRD is standalone-creatable only for now, same as `SLO` before any
+Attached-tier auto-provisioning existed.
+
 **Still open:**
 
-1. **Does a mature native Crossplane `provider-infisical` exist** (§ item 8), or does
-   the `SecretStore` XRD's backend-configuration step need to go through
-   `provider-terraform` wrapping Infisical's own Terraform provider instead? Not
-   verified yet.
-2. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
+1. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
    `idp-application` should ship a sensible default (weights, pauses, which
    `ClusterAnalysisTemplate`(s) attach automatically) so most apps never need to specify
    `rollout.steps` at all, matching the "golden path, fully automated" goal, now
    sharpened by your confirmation that custom `analysisTemplates:` should be rare — not
    designed here. The chart (built 2026-08-13) ships a deliberately inert single-step
    placeholder in the meantime — see `charts/idp-application/README.md`.
-3. The chart-architecture question raised this round (one `idp-application` chart vs.
+2. The chart-architecture question raised this round (one `idp-application` chart vs.
    splitting pieces like ConfigMap out) — addressed in chat, not yet folded into a doc
    revision pending your read. (Built as one chart, per the original leaning — worth
    confirming this is still the intended resolution now that it's real code, not just
    the leaning.)
-4. **The actual Crossplane API group for `components:`/`slos:` XRs** — not fixed
+3. **The actual Crossplane API group for `components:`/`slos:` XRs** — not fixed
    anywhere yet (none of those XRDs exist). The chart uses a placeholder,
    `catalog.idp.io/v1alpha1`, one value to update once this is decided.
-5. **The real namespace/labels that identify the ingress controller** (§3's
+4. **The real namespace/labels that identify the ingress controller** (§3's
    `networkPolicy.allowIngressFromIngressController`) — no ingress controller has been
    installed or named anywhere in idp's docs yet. The chart defaults to the
    `ingress-nginx` project's conventional namespace label as a placeholder.
