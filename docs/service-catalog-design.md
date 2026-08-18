@@ -1453,6 +1453,17 @@ on any cluster but kind-dev now targets its own per-environment store directly
 environment); kind-dev, which has no per-environment store at all by design,
 keeps the original path-prefix convention unchanged.
 
+**One more real naming bug, caught by user review, fixed the same day**: kind-prod's
+new `xr-requests` (above) originally reused kind-dev's `app-<appName>-cicd`
+destination namespace, copy-pasted for mechanical consistency without weighing
+what the name actually claims. On kind-dev that name is accurate (the real CICD
+control plane also lives there); kind-prod never runs anything CICD-related, so
+reusing it there falsely implied it did. Renamed to `app-<appName>-xrs` -
+describes what's actually there and generalizes to any future XR kind this
+mechanism ever carries on an upper cluster, not just `SecretStore`. Migrated the
+one real app that had live state under the old name (`checkout-api`) the same
+live-delete-and-let-the-operator-recreate way as the mid-migration cleanup above.
+
 **Still open:**
 
 1. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
