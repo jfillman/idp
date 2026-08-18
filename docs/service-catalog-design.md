@@ -1299,6 +1299,95 @@ auto-provisioning (create-on-first-env-for-a-cluster, reference on later ones) -
 this XRD is standalone-creatable only for now, same as `SLO` before any
 Attached-tier auto-provisioning existed.
 
+**Multi-cluster revision, resolved and built 2026-08-17 (separate session, same
+day).** Two real, connected pieces of follow-on work, prompted by three questions
+about how this should actually operate: does onboarding auto-provision the store,
+does a second cluster get real per-environment isolation (not just a
+`secretsPath` convention), and how should secrets actually be organized inside
+Infisical.
+
+**Auth method, per cluster, not universal.** Kubernetes Auth (above) only works
+because Infisical and the workload calling it are the same cluster - Infisical
+only ever runs on kind-dev. A `ClusterSecretStore` on any OTHER cluster (kind-prod
+today) would mean Infisical calling TokenReview against a DIFFERENT cluster's API,
+which Infisical CE can only do via Gateway mode - Enterprise-only. Two real options
+weighed with you: a second Infisical instance per cluster (keeps Kubernetes Auth
+everywhere, zero persisted credentials anywhere, real infra cost per cluster) vs.
+Universal Auth on non-kind-dev clusters only (one shared instance, cheaper, but a
+real persisted `clientId`/`clientSecret` on upper-env clusters specifically - the
+higher-stakes environments). **You chose Universal Auth for upper clusters** -
+`InfisicalProject` gained `spec.authMethod` (`kubernetes` | `universal`), set by
+the `SecretStore` Composition from a plain string comparison on `spec.cluster`
+(`"kind-dev"` → `kubernetes`, else → `universal`) - a static topology fact, not an
+`ExtraResources` cluster-registry lookup like `ApplicationEnvironment`'s own gate.
+
+**Secrets organization: `environmentSlug` gained a real second mode**, not a new
+field - `"shared"` (the default, original behavior, one project/identity/store
+per `(app, cluster)`) or any other value, which creates ONE additional Infisical
+environment inside the ALREADY-existing project plus a SEPARATE
+`ClusterSecretStore` narrowed to exactly one namespace
+(`^app-<appName>-<environmentSlug>$`). Two options short of this were considered
+and rejected: keeping the single-shared-environment `secretsPath` convention
+(what item 8 originally shipped) doesn't give real isolation - nothing stops an
+`ExternalSecret` from pointing its own `remoteRef` at another env's path, since
+ESO's Infisical provider pins auth/scope at the STORE level, not per secret; a
+separate Infisical PROJECT per `(app, cluster, env)` (instead of environments
+within one project) was rejected as needless multiplication - it buys no more
+isolation than the per-environment-store design already delivers (both ultimately
+reduce to "which `environmentSlug` can this store query"), while losing "shared"
+as a natural concept. Project slug is now computed from spec fields
+(`<appRef.name>-<cluster>`), not derived from either XR's own `metadata.name` -
+needed so a per-environment XR (a different object, different name) can compute
+the identical slug its "shared" sibling already used, with zero lookups.
+
+**Auto-provisioning mechanism - NOT `ApplicationEnvironment`'s own Composition
+directly, a real correction of the original plan.** Both `NodeJSApplication` and
+`ApplicationEnvironment` are `provider-github`-only (§0/§1) - neither can create a
+native Kubernetes resource on ANY cluster, including kind-dev's own. The real
+mechanism is the same one every other Attached-tier resource already uses:
+`idp-application`'s own chart (`templates/attached/secretstore.yaml`) renders the
+`SecretStore` XR - unconditionally, `"shared"` mode, into a dedicated
+`app-<appName>-secrets` namespace (redundant-but-harmless idempotent writes from
+every env release, same convention `cluster-app-yaml.yaml` already established -
+needs a namespace that doesn't vary per env for this to actually be one shared
+object, not N different ones), plus, on any cluster other than kind-dev, this
+env's own non-`"shared"`-mode XR too. `SecretStore` itself (and its own
+`InfisicalProject`) therefore needed installing on kind-prod for the first
+time, alongside a new, small `InfisicalEnvironment` CRD/reconcile loop in the
+same operator (ensures one environment exists in an already-existing project;
+never creates a project itself).
+
+**Genuinely cross-cluster, proven live, not simulated**: a real secret written
+into Infisical on kind-dev, pulled by a real `ExternalSecret` on kind-prod, over
+a live-verified NodePort path from kind-prod's own node to kind-dev's
+(`infisical-nodeport.yaml`) - both kind clusters happen to share one L3 network on
+this podman host, confirmed live (a real 403 from kind-dev's own API server proved
+TCP reachability before ever exposing Infisical), a real but explicitly
+kind-sandbox-specific stand-in for what a routable endpoint between genuinely
+separate clusters would be. Isolation proven live too: a correctly-namespaced
+`ExternalSecret` pulls the right value; a wrong-namespace one hard-fails
+(`could not get secret data from provider`), not just an authz warning. Five real
+bugs found live along the way (beyond the four in the Kubernetes Auth swap,
+already recorded above): `ensure_project_membership` genuinely wasn't idempotent
+(a live 400 on retry, the first time that code path ever ran against real data);
+`_session`'s own default `Content-Type: application/json` broke every empty-body
+`DELETE` (Fastify rejects it as a 500, not the 400 it actually was); the chart's
+own `{{appName}}-{{cluster}}` naming pattern renders as a bare `-` under `helm
+lint`'s all-empty defaults, which YAML parses as an ambiguous block-sequence
+indicator, not a plain scalar - fixed by quoting; Crossplane's own core
+controller had no RBAC for the new `infisicalenvironments` CRD, on either
+cluster; and a real off-by-one in this operator's own `INFISICAL_API_URL` for
+kind-prod's copy (`/api` included when it shouldn't be - `main.py`'s own client
+already prefixes every path with `/api/v1/...`), caught live as a real
+`/api/api/v1/...` 404.
+
+**Still open**: the org-level `INFISICAL_ADMIN_TOKEN` now has real blast radius on
+two clusters, not one - an accepted, flagged cost of one shared instance, not
+solved further here. A genuinely separate, real upper-env cluster (not sharing
+this podman host's network with kind-dev) would need a real routable endpoint in
+place of the NodePort stand-in - not designed here, flagged as the thing to revisit
+first if this pattern is ever extended beyond this local sandbox.
+
 **Still open:**
 
 1. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
