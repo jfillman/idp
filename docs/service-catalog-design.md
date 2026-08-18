@@ -1494,13 +1494,25 @@ this account`, since the GitHub repo genuinely already existed
 by manually restoring each resource's `external-name` annotation to match its
 `spec.forProvider.name` - not a code bug, an operational data-loss incident this
 catalog has no automated recovery for yet, flagged here rather than silently
-patched away. Also newly visible on the same three repos once this unblocked
-their next reconcile: a live `422 Secret scanning is not available for this
-repository` on every `PATCH`, from `securityAndAnalysis.secretScanning` being
-enabled somewhere in `provider-github`'s own CRD defaults (not set anywhere in
-this catalog's own Compositions) against private repos on a plan that doesn't
-support it - doesn't block `Ready`, but will keep showing as `Synced: False`
-until addressed; not fixed here, a separate follow-up.
+patched away. Also newly visible on the same three repos once this unblocked their next
+reconcile, and fixed the same day once diagnosed: a live `422 Secret scanning
+is not available for this repository` on every `PATCH`. Root cause confirmed
+live via the GitHub API directly (`gh api`), not guessed: `security_and_analysis`
+isn't set anywhere in this catalog's own Compositions - `terraform-provider-
+github`'s own schema defaults `secret_scanning`/`secret_scanning_push_protection`
+to `"enabled"` when the block is left entirely unset, and upjet late-inits that
+default into `spec.forProvider` as real desired state on first reconcile. This
+account's private repos have no GHAS entitlement, so GitHub silently creates the
+repo with it already "on" but rejects an explicit PATCH trying to (re-)assert
+`"enabled"` - only an explicit `"disabled"` PATCH is accepted (confirmed by
+hand against the real API before touching any code). Fixed by rendering
+`securityAndAnalysis` explicitly (`disabled`) on both `src-repo.yaml` and
+`gitops-repo.yaml` (`compositions/nodejsapplication/templates/render-github-
+resources/`), tagged `v0.3.24`, rolled out via the existing git-tag-pinned
+Application on both clusters (forced a real ArgoCD app-of-apps refresh +
+manual sync, ending up with `Composition` revision 15) - live-verified all
+four `Repository` resources across both apps (`checkout-api`, `nodejs-demo-app`)
+`Synced: True` again.
 
 **Still open:**
 
