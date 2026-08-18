@@ -1464,6 +1464,44 @@ mechanism ever carries on an upper cluster, not just `SecretStore`. Migrated the
 one real app that had live state under the old name (`checkout-api`) the same
 live-delete-and-let-the-operator-recreate way as the mid-migration cleanup above.
 
+**Real bug found and fixed 2026-08-18: `InfisicalProject`/`InfisicalEnvironment`
+never reported readiness Crossplane could see, so every `SecretStore` (and any
+Bootstrap XR waiting on one, e.g. `NodeJSApplication`'s own `src-repo`-adjacent
+readiness gate) stayed stuck `Creating` forever even once actually provisioned.**
+Root cause: the operator (`main.py`) only ever wrote its own `status.phase: Ready`
+convention - the `SecretStore` Composition's `function-auto-ready` pipeline step
+(same mechanism every other Composition in this catalog uses) only ever checks
+the standard `status.conditions[type=Ready].status=="True"` shape, which neither
+CRD's schema even had a field for. Fixed by adding `status.conditions` to both
+CRDs and having `reconcile()`/`reconcile_environment()` write a real `Ready: True`
+condition on success (`ready_condition()` helper) - live-verified on both
+kind-dev (`checkout-api-kind-dev` SecretStore, Kubernetes Auth) and kind-prod
+(all three `checkout-api-kind-prod*` SecretStores, Universal Auth) by rebuilding
+the operator image, applying the updated CRDs, and restarting the Deployment on
+both clusters; `checkout-api-xr-requests`/`nodejs-demo-app-xr-requests` ArgoCD
+Applications went `Healthy` immediately after, no other change needed.
+
+A separate, unrelated bug surfaced investigating the same live symptom
+(`checkout-api-xr-requests` stuck `Progressing`): three `provider-github`
+`Repository` managed resources (`checkout-api-src`, `nodejs-demo-app-src`,
+`nodejs-demo-app-gitops`) had lost their `crossplane.io/external-name` annotation
+- the provider pod's creation timestamp lined up almost exactly with each
+resource's `external-create-succeeded` timestamp, consistent with a provider
+restart racing the post-create annotation write. Each kept retrying `POST
+/user/repos` on every reconcile and hitting a real `422 name already exists on
+this account`, since the GitHub repo genuinely already existed
+(confirmed live via `gh repo view`) but Crossplane no longer knew that. Recovered
+by manually restoring each resource's `external-name` annotation to match its
+`spec.forProvider.name` - not a code bug, an operational data-loss incident this
+catalog has no automated recovery for yet, flagged here rather than silently
+patched away. Also newly visible on the same three repos once this unblocked
+their next reconcile: a live `422 Secret scanning is not available for this
+repository` on every `PATCH`, from `securityAndAnalysis.secretScanning` being
+enabled somewhere in `provider-github`'s own CRD defaults (not set anywhere in
+this catalog's own Compositions) against private repos on a plan that doesn't
+support it - doesn't block `Ready`, but will keep showing as `Synced: False`
+until addressed; not fixed here, a separate follow-up.
+
 **Still open:**
 
 1. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
