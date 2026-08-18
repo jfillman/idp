@@ -1388,6 +1388,71 @@ this podman host's network with kind-dev) would need a real routable endpoint in
 place of the NodePort stand-in - not designed here, flagged as the thing to revisit
 first if this pattern is ever extended beyond this local sandbox.
 
+**Third revision, same day, real correction of the above: the trigger moved from
+idp-application's chart to the Bootstrap XRs themselves.** Your objection, and a
+correct one: "the first deployed Helm chart sets things up" meant secrets
+infrastructure was an emergent side effect of someone shipping a real release, not
+a real provisioning step - not discoverable from the Bootstrap XRD list at all,
+and not created until long after an app might actually need it. Considered
+composing the `SecretStore` XR directly from `NodeJSApplication`/
+`ApplicationEnvironment`'s own Compositions first - real nuance worth recording:
+`NodeJSApplication` structurally *could* (its Composition already runs on
+kind-dev, exactly where the dev-cluster store needs to live too), but
+`ApplicationEnvironment` structurally *can't* for an upper-cluster store (its
+Composition also runs on kind-dev - Bootstrap-tier's centralization - but the
+resource has to land on the target cluster, and `provider-kubernetes` remote
+credentials would violate "no cluster ever holds credentials for another
+cluster's API," the same constraint that already kept `AppProject`/`Application`
+ownership out of direct Crossplane composition, §0). Real fix: both XRs commit a
+`SecretStore` XR manifest via `xr-requests` instead - the exact mechanism every
+other Bootstrap XR already goes through, just aimed at the target cluster's own
+tenants repo for `ApplicationEnvironment`'s copy. `idp-application`'s
+`attached/secretstore.yaml` is deleted entirely, not just made conditional.
+
+One real, necessary piece of new infrastructure this exposed: `xr-requests` was
+kind-dev-only before (Bootstrap-tier never ran anywhere else). kind-prod now has
+its own copy (`gitops-cluster-kind-prod/02-argocd-apps/xr-requests/`), narrowly
+scoped to just `SecretStore` in its `AppProject` - `NodeJSApplication`/
+`ApplicationEnvironment` still correctly never run there.
+
+Live-verified against real, already-onboarded apps (not fresh test fixtures) on
+both clusters - updating the live `Composition` objects triggered
+`compositionUpdatePolicy: Automatic` re-reconciliation of existing
+`NodeJSApplication`/`ApplicationEnvironment` XRs for real, which committed the new
+manifests, which `xr-requests` picked up and applied, entirely independent of
+whether that app had ever shipped a release. Two real bugs found live in the
+process, both from the *previous* revision's chart-triggered mechanism having
+already run for real apps before this fix landed (tag/pin bump + sync happened
+in-between the two revisions) - not bugs in this design itself, but real
+contamination it had to clean up: (1) kind-dev's own `idp-onboarding` `AppProject`
+(xr-requests' scoping project) didn't whitelist `SecretStore` yet - "resource
+catalog.idp.io:SecretStore is not permitted in project idp-onboarding", same real
+gap independently caught and fixed on kind-prod's copy already, missed on
+kind-dev's because that file wasn't touched building the first pass; (2) the
+old chart-rendered `SecretStore` XRs (a duplicate, same deterministic project
+slug, different Kubernetes namespace) had already created real Infisical
+projects for `checkout-api` on both clusters - deleting them out from under the
+new xr-requests-created XRs (same slug) left the new ones pointing at
+now-deleted project/credential state, since Crossplane's own per-namespace
+`Object` resources don't know about each other's same-named remote target
+colliding. Recovered live by deleting the stale namespaces/duplicate `Object`s
+and forcing an operator resume (pod restart) - real cleanup, not a design flaw,
+but a genuine hazard worth naming for next time two provisioning mechanisms
+briefly coexist during a mid-flight redesign like this one.
+
+Also fixed the same day, a separate but related real bug: `idp-application`'s own
+`external-secret.yaml` never got rewired when the per-environment stores were
+built in the second revision above - every secret, `shared:` or not, still
+resolved through the one wide-open shared store via a path-prefix convention.
+The per-environment stores existed and were correctly isolated (proven by
+hand-written `ExternalSecret`s during that build) but nothing developer-facing
+ever used them. Fixed via ESO's real, confirmed (not guessed)
+`ExternalSecretData.sourceRef.storeRef` per-entry override: a non-`shared` secret
+on any cluster but kind-dev now targets its own per-environment store directly
+(no path prefix needed - the store itself is already scoped to that one
+environment); kind-dev, which has no per-environment store at all by design,
+keeps the original path-prefix convention unchanged.
+
 **Still open:**
 
 1. **What the platform's default canary step sequence should be** (§ Argo Rollouts) —
