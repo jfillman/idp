@@ -233,6 +233,34 @@ Generalized for the IDP:
   `$ref`-only source is still auto-detected as a plain directory source and applies
   every YAML in it unless explicitly excluded), `valueFiles: [$appsrc/<cluster>/<env>/
   values.yaml]`.
+- **Source 2 (optional, added 2026-08-18)**: a Kustomize `configMapGenerator` at
+  `gitops-<app-name>/<cluster>/<env>/configmap/` — the ApplicationSet source
+  `idp-application`'s own `configMaps: existingConfigMap:` field (§ service-catalog-
+  design.md's Item on `configMaps:`/`secrets:`) was built to consume, for apps with
+  many config files where hand-writing `configMaps: data:` in `values.yaml` doesn't
+  scale. Same repo as Source 1 (no new `AppProject.sourceRepos` entry needed), same
+  `disableNameSuffixHash: true` fixed-name convention that field's own design settled
+  on. Opt-in only, via an optional `configMapGenerator: true` field on the per-env
+  `identity.yaml` — most apps never set it, and the mechanism is built specifically so
+  they're unaffected either way.
+
+  **Can't be a plain `{{ if }}` around a 3rd `sources` entry inside `template:`** —
+  confirmed against ArgoCD's own docs and source: even with `goTemplate: true`,
+  templating is applied per string *field* after the YAML is already parsed, never to
+  the whole document as text the way Helm does, so control flow can't add or remove
+  array elements there. The real mechanism is `spec.templatePatch` — a separate string
+  field that *is* rendered as one whole Go-template document, then merged onto the
+  generated `Application` via `strategicpatch.StrategicMergePatch`. Since
+  `ApplicationSpec.Sources` carries no `patchMergeKey`, any patch that touches
+  `sources` at all replaces it wholesale — so the patch repeats sources 0 and 1
+  verbatim alongside the new source 2, rather than trying to append just one entry.
+  The `{{ if }}`-false branch renders to a literal `{}`, not an empty/absent block —
+  confirmed live (a local Go harness against the real `strategicpatch` package) that a
+  bare `spec:` with nothing under it parses to `spec: null`, and merging that wipes
+  `sources` *and* `destination` on every tenant that didn't opt in, not just leaving
+  them unset. `{}` is the verified-safe no-op. See either cluster repo's own
+  `tenant-onboarding/applicationset.yaml` for the implementation (kind-dev's carries
+  the full rationale in its header; kind-prod's points at it).
 
 `gitops-<app-name>` layout — **upper environments only**, see §10 for where lower/
 ephemeral envs live instead:
