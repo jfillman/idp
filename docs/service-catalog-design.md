@@ -455,30 +455,45 @@ Two real bugs found live during this build:
   `xr-requests/` as usable but **monitor** rather than fully routine until this has more
   soak time.
 
-**AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`,
-[[idp_session_phase2_holmesgpt]]) needs a real redesign here, not just more clusters to
-run on.** Confirmed by reading the function's actual code: it currently watches
-`req.observed.resources["rollout"]` — the Rollout composed by *step 1 of its own
-pipeline* (the old `ai-rollout`-derived `Application` XRD, which renders the Rollout
-directly). But the deployment mechanism that actually got built, `idp-application`
-rendered by Helm via ArgoCD, never gives Crossplane a hand in creating the Rollout at
-all — there's no live XR for this function to attach to in the real model. (The
-function's own README already names this as a known gap; it isn't new here, just newly
-relevant.) Fix: switch from same-XR composition to an **extra-resources lookup** — a
-small, always-on Attached-tier-shaped resource (`RolloutWatch`) `idp-application`
-renders unconditionally alongside any release with `rollout:` set (same treatment as
-`ServiceMonitor` — not a developer-selected `components:` entry), whose Composition
-observes the *already-existing* Rollout Helm created (by name/namespace convention) and
-composes the diagnosis `Job` only, which it legitimately owns creating. Carries
-`environmentRef` like every other Attached-tier resource; gets its gitops/src repo
-coordinates from `NodeJSApplication`'s own `appRepoUrl` field (already committed to
-`app.yaml`) instead of the current per-XR annotation scheme. Runs per-cluster, riding
-the same Attached-tier catalog install as everything else in this section — no separate
-mechanism needed. **Not resolved here, flagged as real follow-on work**: Holmes itself
-needs live in-cluster access to diagnose anything (pod logs, events), so a single shared
-Holmes instance has the same locality problem one level further out — whether that
-means Holmes runs per-cluster too, or stays shared with per-cluster-scoped credentials,
-needs its own pass.
+**AI-triage (`function-rollout-watcher`/`diagnosis-holmes-dispatch`) redesign — DONE,
+live-verified 2026-08-18/19 on `kind-prod`** (built directly on this section's own
+design below, written the session before). Confirmed live, not just by reading code,
+that the old mechanism — watching `req.observed.resources["rollout"]`, a Rollout
+composed by *step 1 of the function's own pipeline* (the `ai-rollout`-derived
+`Application` XRD, which rendered the Rollout directly) — had nothing to attach to in
+the real `idp-application`/Helm/ArgoCD deployment model. Fixed by switching to a real
+Crossplane **extra-resources requirement** (`response.require_resources`/
+`request.get_required_resource` — the modern SDK call, not the deprecated
+`extra_resources` field or `function-go-templating`'s YAML-only `ExtraResources`
+meta-resource, which doesn't apply to a native Python function): a small, always-on
+Attached-tier XR (`RolloutWatch`, new XRD) `idp-application` renders unconditionally
+alongside any release with `rollout:` set (same treatment as `ServiceMonitor`), same
+name/namespace as the Rollout it watches. Its Composition (single-step, just
+`function-rollout-watcher` — no `function-go-templating` involved at all) matches the
+live Rollout by name and reads its *observed* status from there; the diagnosis `Job` is
+still the only thing this Composition composes.
+
+GitOps/source repo coordinates turned out simpler than planned: `NodeJSApplication` has
+no live `appRepoUrl` *field* to read (it was only ever a template-computed string, never
+persisted) and can't be cross-cluster-looked-up anyway (Bootstrap-tier centralizes on
+`kind-dev`; `RolloutWatch` runs on whichever cluster the app is actually deployed to).
+Derives them deterministically instead — `gitops-<appName>` / `<appName>`, same fixed
+platform owner, `<cluster>/<env>/values.yaml` — mirroring exactly what
+`ApplicationEnvironment`'s own Composition already computes for the same app. No per-XR
+annotations needed at all (the old `gitops.example.org/*`/`src.example.org/*` scheme is
+gone, it was never wired to the real system).
+
+**Holmes locality, resolved**: runs per cluster, not shared — same reasoning that
+already kept `AppProject`/`SecretStore` per-cluster (it needs live in-cluster access to
+actually investigate a Degraded Rollout). Installed via its own GitOps Application
+(`gitops-cluster-<name>/30-ai-triage/holmesgpt/`), `robusta/holmes` v0.38.0, per-cluster
+`ANTHROPIC_API_KEY`/GitHub-PAT secrets (never templated into git). One real gotcha hit
+live worth remembering: an `ANTHROPIC_API_KEY` env var alone does **not** register a
+usable model — Holmes' own `/api/model` reported only the built-in `"Robusta"` hosted
+model until an explicit `modelList` entry (`envRef:ANTHROPIC_API_KEY` sugar) was added.
+
+Live-verified end-to-end on `kind-prod`'s real (not manufactured) `checkout-api`
+`ImagePullBackOff` — see [[idp_session_ai_triage_extra_resources]] for the full account.
 
 **Upper-env half built and live-verified 2026-08-15**: the registry,
 `ApplicationEnvironment.spec.cluster` becoming real, the `type: upper`/`crossplaneReady`
@@ -488,8 +503,8 @@ live-verified for real" note below for the detail, including one real bug found 
 fixed (`managementPolicies`, not `deletionPolicy`). Still not buildable: a second
 *dev* cluster (`NodeJSApplication.spec.devCluster` and its own registry gate) — no
 second dev cluster exists yet, and that field was explicitly out of scope for this
-pass. AI-triage's own redesign (this section, above) also remains unbuilt — a
-separate pass.
+pass. AI-triage's own redesign (this section, above) is now built and live-verified
+(2026-08-18/19), no longer open.
 
 ## §1. `provider-github` is the mechanism behind every "create/commit to a repo" step
 
