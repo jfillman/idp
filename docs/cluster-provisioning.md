@@ -60,6 +60,26 @@ from the sweep entirely and handling `hack/kind-config.yaml`'s one real per-clus
 field (the kind cluster's own `name:`, derived from `clusterName` by stripping its
 `kind-` prefix) as a separate, explicit, non-self-referential substitution.
 
+## SCM + registry host/owner — added after a gap the user caught
+
+The first version left `https://github.com/jfillman/...` and
+`ghcr.io/jfillman/function-rollout-watcher` hardcoded throughout — every repoURL
+self-reference already got its *repo name* substituted, but not the GitHub owner or
+host in front of it, and the one org-owned container image wasn't touched at all.
+`cluster.yaml` now has `scm.{host,owner}` and `registry.{host,owner}`, substituted via
+the same literal-string mechanism, scoped to the exact `github.com/jfillman` /
+`ghcr.io/jfillman` literals (with and without the `https://` prefix, to also catch
+prose mentions) — **not** a bare `github.com` replace, which would have wrongly
+rewritten this template's own genuinely-third-party vendored repoURLs (`10-crds-
+operators/sloth/application.yaml`'s real `https://github.com/slok/sloth.git`, plus
+comment mentions of `github.com/argoproj/argo-cd` and `github.com/crossplane-contrib/*`
+— confirmed live these exist and stay untouched). A bare `jfillman` catch-all runs
+last, after the more specific rules have already consumed the URL forms, to pick up
+what's left (`argocd-repo-creds-jfillman`'s own resource-name convention,
+`provider-github-config.yaml`'s credential-JSON example comment). Re-verified with a
+adversarial test run using a different host entirely (a fake `gitlab.example.com`) —
+substituted correctly, `sloth`'s real upstream repoURL confirmed unchanged.
+
 ## Hard invariants — refused, not silently corrected
 
 Two rules this catalog already treats as permanent architecture, not per-cluster
