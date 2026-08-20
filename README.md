@@ -105,6 +105,7 @@ Backstage integration (goal 7) not started.
 idp                        this repo — docs + running status
 gitops-cluster-dev          kind-dev's cluster config (Phase 1 done, live-verified)
 gitops-cluster-dev-tenants  kind-dev's app-onboarding requests - real xr-requests/ commits, live-verified 2026-08-15
+gitops-cluster-template     gold-standard template for provisioning a new cluster repo - docs/cluster-provisioning.md, built 2026-08-19
 idp-cluster-baseline        shared cluster-config chart(s) (not started)
 idp-service-catalog         Crossplane XRDs/Compositions + the idp-application chart, tagged v0.1.0, pinned+synced via ArgoCD
 ```

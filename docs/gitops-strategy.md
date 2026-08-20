@@ -104,6 +104,10 @@ Everything else is secondary to that, but worth having on record:
 **Cons, real, not dismissed:**
 - N repos to provision instead of one — mitigate with a repo-scaffolding script once
   the logical-group directory shape (§3) is finalized; not solved by this doc.
+  **Closed 2026-08-19**: see `docs/cluster-provisioning.md` — `gitops-cluster-template`
+  (a real GitHub template repo) + `hack/customize-cluster.sh`, taking `type: dev|upper`
+  and a per-component subset as a declarative `cluster.yaml`, structurally verified
+  against both real cluster repos.
 - A genuinely fleet-wide change (a security patch every cluster needs) is N PRs, not
   one atomic commit. `idp-cluster-baseline` absorbs most of the actual content-diff cost
   (the manifest changes once, each cluster repo just bumps a pin), but opening/merging N
