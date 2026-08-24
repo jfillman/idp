@@ -164,17 +164,26 @@ cluster admin's actions land through `argocd-platform`, entirely inside
 `gitops-cluster-<name>`. Neither instance's RBAC nor its watched repo overlaps with the
 other's.
 
-**Refinement, live-verified 2026-08-16**: `argocd-platform` additionally watches every
-tenant's own `<type>-<app-name>-cicd` namespace (ArgoCD's ApplicationSet-in-any-namespace
-feature, `application.namespaces`/`applicationsetcontroller.namespaces` scoped to a
-`*-cicd` glob) so `platform-cicd`'s own onboarding-generated resources (a per-app
-ApplicationSet, a GitHub-token Secret, matching RBAC — see `platform-cicd`'s
-`docs/ephemeral-environments.md`) can live colocated with the rest of that namespace's
-chart-rendered resources instead of needing a cross-namespace grant into `argocd`. This
-doesn't cross the `argocd-apps` boundary or widen either instance's privilege - `-cicd`
-namespaces are already `argocd-platform`'s to create/RBAC (§3's "bootstrap namespaces/
-RBAC" line above), the same category as `00-bootstrap/`, just generated per-tenant
-instead of once. `argocd-apps`'s own config is untouched.
+**Refinement, live-verified 2026-08-24 (supersedes an earlier 2026-08-16 version of this
+note)**: `argocd-apps` additionally watches every tenant's own `<type>-<app-name>-cicd`
+namespace (ArgoCD's ApplicationSet-in-any-namespace feature,
+`application.namespaces`/`applicationsetcontroller.namespaces` scoped to a `*-cicd` glob)
+so `platform-cicd`'s own preview-environment resources (the pr-envs ApplicationSet, a
+GitHub-token Secret, matching RBAC — see `platform-cicd`'s
+`docs/admin/ephemeral-environments.md`) can live colocated with the rest of that
+namespace's chart-rendered resources instead of needing a cross-namespace grant into
+`argocd-apps`. This is `argocd-apps`, not `argocd-platform`, deliberately: PR-based
+ephemeral environments are app-owner/PR-driven work, matching this section's own
+`argocd-apps` description above, not cluster-admin work. An earlier version of this same
+mechanism briefly lived on `argocd-platform` instead (2026-08-16 through 2026-08-23,
+chasing an unrelated SCM-providers bug found live testing PR-envs) — moved once it was
+clear nothing else on `argocd-platform` needed the wider watch: release-stage
+`Application`s (`release-application.yaml`) live directly in `argocd-platform`'s own
+namespace and were never affected either way. The per-tenant `AppProject`
+(`platform-cicd-app`'s `templates/argocd/appproject.yaml`) moved with it — it now renders
+two `AppProject`s of the same name, one per instance, each only visible to that instance
+since an ArgoCD instance only ever looks for an `AppProject` inside its own control-plane
+namespace.
 
 ## 3. Logical groupings inside a cluster's config (requirement 7)
 
