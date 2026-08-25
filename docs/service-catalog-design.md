@@ -576,9 +576,21 @@ already installed (e.g. a dedicated file-rendering function alongside the shared
 cluster-wide, a real bug hit live building the `SLO` Composition (see that Composition's
 `build-composition.sh` header) — reusing the one already-installed `function-go-templating`
 Function via `Inline` templates avoids the problem entirely rather than working around it.
-The "shared function, parameterized by stack" idea for `NodeJSApplication`/
-`SpringBootApplication` code reuse is deferred until `SpringBootApplication` actually
-gets built — nothing to share yet with only one stack implemented.
+**Revisited now that `SpringBootApplication` is built (2026-08-24), decision: still not
+worth it.** Four of five `render-github-resources/*.yaml` files
+(`00-devcluster-gate.yaml`, `cicd-identity-yaml.yaml`, `gitops-repo.yaml`,
+`secretstore-xr.yaml`) plus `cicd-onboarding-status/status.yaml` are now genuinely
+byte-for-byte duplicated between the two Compositions, with only cosmetic
+`NodeJSApplication`/`SpringBootApplication` naming swapped in comments — real
+duplication, not a hypothetical. Only `src-repo.yaml` (boilerplate/Dockerfile) is
+actually stack-specific. A "shared function, parameterized by stack" refactor would
+remove that duplication, but was deliberately not built this pass: it would touch the
+one pipeline mechanism *both* live-verified XRDs depend on, for a payoff that's
+copy-paste-drift risk (a real but low-severity cost — these five files change rarely)
+against a nontrivial redesign of an already-working, already-verified mechanism. Worth
+revisiting if a third Bootstrap-tier language XRD is ever built (three copies is a
+different call than two), or if one of these five files needs a real bugfix and the
+other Composition's copy would otherwise silently drift — not before then.
 
 **Confirmed: Crossplane v2 target.** See the Terminology section above for what that
 changes — namespaced XRs directly, no separate Claim type. Composition Functions
@@ -854,10 +866,10 @@ Backstage template — argues for it directly: a developer picking "New Service"
 distinct, clearly-labeled template cards, not a generic form with a language dropdown
 buried inside. Matches the existing memory note on this (favor XRD designs that "read
 cleanly as a Backstage template input" over internally-convenient ones). The repo-
-creation/CICD-onboarding logic that's ~90% identical across languages would live in a
-shared Composition Function per §2's original plan — deferred until `SpringBootApplication`
-actually gets built (see §2's revision note); `NodeJSApplication`'s own Composition isn't
-factored for sharing yet, nothing to share with only one stack implemented.
+creation/CICD-onboarding logic that's ~90% identical across languages is real,
+confirmed duplication now that both are built — see §2's revision note for the
+decision (still two separate, unshared Compositions; not worth a shared-Function
+refactor yet).
 
 **Scope, deliberately narrow**: src repo + boilerplate + an *empty, scaffolded*
 `gitops-<app-name>` repo + a `tenants/<app-name>/app.yaml` commit into
@@ -893,10 +905,10 @@ cert chained to `kind-dev`'s own independently-generated root CA — not just th
 Custom condition, not an override of the standard `Ready` condition, which
 `function-go-templating` reserves and errors on if a Composition tries to set it
 directly (confirmed live; the framework's own custom-condition mechanism, target
-`CompositeAndClaim`, is the supported way to surface this). `SpringBootApplication` isn't
-built. `BranchProtection` was also deliberately left out of this pass — it would need to
-reference status-check names from a CICD pipeline, and while one now exists, wiring
-`BranchProtection` itself to it is still separate, unstarted work.
+`CompositeAndClaim`, is the supported way to surface this). `BranchProtection` was also
+deliberately left out of this pass — it would need to reference status-check names from
+a CICD pipeline, and while one now exists, wiring `BranchProtection` itself to it is
+still separate, unstarted work.
 
 Live verification (real `kubectl apply`, throwaway `nodejsapp-verify-test`) produced two
 real corrections, not assumed in the original design — see §1 for the full detail: the
@@ -909,6 +921,37 @@ via the GitHub API before teardown. One more live footnote worth recording: the 
 needs `delete_repo` alongside `repo` — without it, `Repository` deletion 403s and the
 composed resource gets stuck `Terminating` (hit live during cleanup; not a
 `NodeJSApplication` bug, but relevant to anyone deprovisioning through this provider).
+
+**Status: `SpringBootApplication` built 2026-08-24**, live-verified on `kind-dev`
+(`idp-service-catalog/xrds/springbootapplication.yaml`,
+`compositions/springbootapplication/`) — a structural port of `NodeJSApplication` onto
+the Java/Spring Boot stack, same devCluster-gated onboarding mechanism, same
+CicdOnboarded-not-Ready status convention, same six-field `identity.yaml`. Only the
+Java/Spring-specific pieces differ: `spec.javaVersion` (`"17"`/`"21"`, replacing
+`nodeVersion`), `spec.buildTool` (`maven`/`gradle`, replacing `packageManager`, branching
+the Composition's boilerplate and multi-stage Dockerfile the same way), and
+`spec.groupId` (no `NodeJSApplication` equivalent — the Maven groupId / Gradle group,
+and deliberately this app's *only* Java package, not `groupId`+artifactId nested,
+because `$xrName`'s kebab-case `metadata.name` isn't a legal Java package-name segment;
+the scaffolded `Application` class lives directly in the groupId package instead of
+attempting a kebab-to-camelCase derivation). `springBootVersion` is a template literal
+(`3.3.4`), not a spec field, matching the reasoning against a `spec.githubOwner` field on
+`NodeJSApplication` — the platform, not each app, picks and centrally upgrades the
+framework version. The Dockerfile is genuinely multi-stage here (JDK build stage, bare
+JRE runtime stage) rather than `NodeJSApplication`'s single-stage script — a real
+functional difference, not just a style choice, since a compiled JVM app has no runtime
+need for the build toolchain at all (unlike Node's runtime interpreter, which is the
+same binary either way).
+
+Live verification (real `kubectl apply`, throwaway `springbootapp-verify-test` on
+`kind-dev`, both `maven`- and `gradle`-`buildTool` branches exercised via
+`crossplane render` first, then a real end-to-end `kubectl apply` for the `maven`
+branch) needed no corrections beyond what `NodeJSApplication` already discovered and
+fixed in this same provider/pipeline plumbing — confirms this catalog's "port the
+already-verified mechanism, vary only the stack-specific content" approach holds up a
+second time. Real `pom.xml`, `identity.yaml`, and the `xr-requests/secretstore.yaml`
+commit were confirmed via the GitHub API; `DevClusterReady`, `CicdOnboarded`, and the
+XR's own `Ready` condition all reached `True` live before teardown.
 
 **Why `gitops-<app-name>` gets created here, empty, rather than by item 3**: its
 lifecycle is app-level (create once), not env-level (create per cluster×env) — creating
