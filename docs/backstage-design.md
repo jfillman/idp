@@ -168,24 +168,40 @@ both:**
 
 - **GitHub org discovery** of `catalog-info.yaml` across tenant repos (`checkout-api`,
   `order-api`, `search-api`, `process-api`, ...) — hand-authored, developer-owned,
-  standard Backstage pattern.
-- **Kubernetes Ingestor** (`backstage-community/plugin-kubernetes-ingestor`) —
-  generates Component/Resource catalog entities directly from live, annotated
-  Kubernetes/Crossplane resources instead of a committed `catalog-info.yaml`. This is a
-  real architectural fork worth deciding explicitly rather than defaulting: ingestor-led
-  catalog data is always in sync with the live cluster (no stale/forgotten
-  `catalog-info.yaml`) but depends on the same cross-cluster read-only creds as the
-  Kubernetes plugin and reads three clusters instead of one GitHub org. Recommend
-  running both in the first pass — GitHub discovery for anything not yet Crossplane-
-  managed, Ingestor for XR-backed resources — and letting real usage show which one
-  should be primary later, rather than picking now on paper.
+  standard Backstage pattern. Not yet built.
+- **Kubernetes Ingestor** — **built, live, 2026-08-27** (Phase 1: `kind-man` only).
+  Correction from the first pass: the real, current package is TeraSky-originated
+  (`@terasky/backstage-plugin-kubernetes-ingestor` +
+  `@terasky/backstage-plugin-scaffolder-backend-module-terasky-utils`), not
+  `backstage-community/plugin-kubernetes-ingestor` — confirmed against the plugin's own
+  source at implementation time, per this doc's own "verify exact name" flag on every
+  plugin-table row. Generates `Component`/`API` catalog entities and scaffolder
+  Templates directly from `idp-service-catalog`'s live XRDs on `kind-man` (which already
+  runs the real service catalog, same as `kind-dev`/`kind-prod`) — no cross-cluster
+  credential work needed for this first slice, since Backstage reads its own cluster's
+  API server via a dedicated `backstage-ingestor` ServiceAccount (RBAC:
+  `gitops-cluster-kind-man/60-backstage/backstage/rbac.yaml`) using the kubelet-
+  projected, auto-rotating token — no ESO/Infisical hop, no long-lived Secret.
+  Only the 5 "Bootstrap-tier" XRDs a developer actually creates directly
+  (`NodeJSApplication`/`SpringBootApplication`/`PythonApplication`/`GoApplication`/
+  `ApplicationEnvironment`) are annotated `terasky.backstage.io/add-to-catalog: "true"`
+  and get scaffolder Templates that PR into `gitops-cluster-dev-tenants`'s
+  `tenants/<app>/xr-requests/` (the real `xr-requests` mechanism, see
+  `service-catalog-design.md` §0) — the other 4 (`TektonCICD`/`SecretStore`/`SLO`/
+  `RolloutWatch`) are auto-derived by other XRDs' Compositions, so they're left
+  unannotated (no template) but still surface as `Component` entities from their live
+  instances, since that ingestion path isn't gated by the annotation. Extending to
+  `kind-dev`/`kind-prod` is a deferred Phase 2, still gated on the cross-cluster
+  NodePort/podman-IP reachability problem ([[platform_cicd_infisical_hardcoded_ip_todo]])
+  exactly as this doc originally flagged.
 - **Crossplane plugin** (`backstage-community/plugin-crossplane`) — shows live
   XR/Claim status and its own resource graph on a catalog entity page. This is a real,
   partial answer to `service-catalog-design.md` Goal 8 ("service catalog generated
   from Crossplane's CRDs") and to the `dependsOn`/`dependencyOf`-from-`componentRef`
   gap that doc flagged as "still not built" — worth re-checking that doc's own status
   note once this plugin is actually integrated, it may close the gap rather than just
-  narrow it.
+  narrow it. Still not built (separate from Kubernetes Ingestor above, despite the
+  similar name — see that plugin's own docs on the relationship).
 
 ## Plugin set
 
@@ -204,7 +220,7 @@ is a first slice, not final.
 | 5 | Crossplane | `backstage-community/plugin-crossplane` | read-only K8s creds per cluster (already decided) — see Catalog ingestion above |
 | 6 | Tekton pipelines | `backstage-community/plugin-tekton` | read-only K8s creds on kind-dev (where platform-cicd's control plane runs) |
 | 7 | GitOps Manifest Updater | RHDH-originated scaffolder plugin, upstream availability TBD — **verify it isn't RHDH-only before committing to it**, this is exactly the mistake the RHDH-vs-upstream correction was about | none new — if it works upstream, it authenticates through the same `token-review-interceptor` GitHub token, not a standing credential |
-| 8 | Kubernetes Ingestor | `backstage-community/plugin-kubernetes-ingestor` | read-only K8s creds per cluster (already decided) — see Catalog ingestion above |
+| 8 | Kubernetes Ingestor | **DONE 2026-08-27** (Phase 1, `kind-man` only) — `@terasky/backstage-plugin-kubernetes-ingestor` (not `backstage-community/...`, corrected at implementation time) | read-only K8s creds per cluster — `kind-man` done via in-cluster ServiceAccount, `kind-dev`/`kind-prod` still deferred — see Catalog ingestion above |
 | 9 | Grafana | `backstage-community/plugin-grafana` | **new**: Grafana read-only API key/service account token, against kind-man's own `kube-prometheus-stack-grafana` |
 
 **Flag on #7 specifically**: "GitOps Manifest Updater" is a Red Hat/Janus-IDP-originated
