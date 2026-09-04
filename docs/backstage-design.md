@@ -219,6 +219,54 @@ both:**
   narrow it. Still not built (separate from Kubernetes Ingestor above, despite the
   similar name — see that plugin's own docs on the relationship).
 
+### Component type taxonomy (`spec.type`) — done 2026-09-04
+
+Kubernetes Ingestor's own fallback for a Crossplane XR's `Component.spec.type` is the
+hardcoded literal `crossplane-xr` (confirmed by reading the installed plugin's own
+source, `EntityProvider.cjs.js`: `annotations[component-type] || xr.workloadType ||
+"crossplane-xr"`) whenever the XR carries no `terasky.backstage.io/component-type`
+annotation. Left alone, every ingested XR — an actual deployed app and an
+`ApplicationEnvironment` alike — lands in one undifferentiated bucket, losing a useful
+catalog facet. Backstage's own convention treats `spec.type` as a small curated
+vocabulary describing the software's role, not its provisioning mechanism, so this
+catalog now sets it explicitly:
+
+| Type | XRDs |
+|---|---|
+| `service` | `NodeJSApplication`, `PythonApplication`, `GoApplication`, `SpringBootApplication` — real deployable apps a developer onboards |
+| `environment` | `ApplicationEnvironment` — a deploy target, not a deployable service |
+| `platform` | `TektonCICD`, `SecretStore`, `SLO`, `RolloutWatch` — auto-derived, never hand-created by a developer |
+
+**Mechanism, and why it isn't a Composition patch**: the obvious-looking approach —
+have each XRD's own Composition stamp the annotation onto the XR it produces — doesn't
+actually work. Verified against `function-go-templating`'s own source
+(`crossplane-contrib/function-go-templating`, `fn.go`): outputting a document matching
+the composite's own `apiVersion`/`kind` (the documented way to "patch the XR itself")
+only merges the **`status`** field back onto the composite — metadata/annotations are
+never read from it. So instead:
+
+- **8 of the 9 XRDs** (everything above except `RolloutWatch`) get the annotation from
+  a Kyverno `ClusterPolicy`
+  (`gitops-cluster-dev/30-policy/kyverno-policies/backstage-component-type-annotations.yaml`),
+  which mutates matching `catalog.idp.io` kinds on every Create/Update admission
+  review. Needed a supplemental read-only `ClusterRole` in the same file (Kyverno ships
+  RBAC for built-in kinds only — same gap already hit for `testworkflows.testkube.io`,
+  see `testkube-rbac.yaml` in the same directory). Kyverno only runs on `kiac-dev`
+  today, which is fine — these 8 XRDs only exist there.
+- **`RolloutWatch`** is the one exception: its instances come from `idp-application`'s
+  own Helm chart (`charts/idp-application/templates/attached/rolloutwatch.yaml`), not a
+  GitOps `xr-requests` commit, and it's the only one of the 9 that also needs to work on
+  `kiac-prod`, which has no Kyverno installed. Set directly in that chart template
+  instead (`terasky.backstage.io/component-type: platform`), shipped as
+  `idp-service-catalog@v0.3.52`.
+
+No manual backfill of already-live XRs was needed: Crossplane's own Composition
+reconcile loop updates every XR's `status` constantly, and each of those updates is
+itself an admission event Kyverno's mutate rule fires on — every pre-existing XR on
+`kiac-dev` picked up the annotation within seconds of the policy going `Ready`, live-
+verified across all 8 kinds (`NodeJSApplication`/`PythonApplication`/`GoApplication`/
+`SpringBootApplication`/`ApplicationEnvironment`/`TektonCICD`/`SecretStore`/`SLO`).
+
 ## Plugin set
 
 User-provided list (real target list, replacing the first draft's generic
