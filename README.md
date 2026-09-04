@@ -116,6 +116,9 @@ idp-service-catalog         Crossplane XRDs/Compositions + the idp-application c
 docs/   design docs, written as decisions land — same convention as platform-cicd/docs/
 ```
 
+Local cluster tooling/ops (kiac, not podman+kind — see `docs/local-clusters.md`),
+built 2026-09-03.
+
 ## Design language
 
 Shares `platform-cicd`'s conventions rather than inventing new ones: `platform.io/*`
