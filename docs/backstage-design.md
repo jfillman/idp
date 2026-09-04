@@ -229,7 +229,7 @@ is a first slice, not final.
 
 | # | Plugin | Package (verify exact name at implementation time) | New credential needed? |
 |---|---|---|---|
-| 1 | ArgoCD | **Code done 2026-09-03** (`@roadiehq/backstage-plugin-argo-cd` + `-backend`, confirmed exact package name at implementation time - not `backstage-community`'s) | read-only API token per ArgoCD instance - **kiac-dev's and kiac-prod's `argocd-apps` instance only**, not `argocd` (platform) or kiac-man's own two - see below |
+| 1 | ArgoCD | **Code done 2026-09-04** (`@backstage-community/plugin-redhat-argocd` + `-backend` - switched from `@roadiehq/backstage-plugin-argo-cd` the same day, user's call, wanting the fuller read feature set: multi-app-per-entity, multi-instance display, Argo Rollouts visualization) | read-only API token per ArgoCD instance - **kiac-dev's and kiac-prod's `argocd-apps` instance only**, not `argocd` (platform) or kiac-man's own two - see below |
 | 2 | Kubernetes topology | `@backstage/plugin-kubernetes` + `@backstage-community/plugin-topology` | read-only K8s creds per cluster (already decided) |
 | 3 | GitHub pull requests | official `@backstage/plugin-github-pull-requests-board`-family | existing GitHub App (below) |
 | 4 | GitHub Actions | official `@backstage/plugin-github-actions` | existing GitHub App — low first-pass value here (platform-cicd/Tekton is this fleet's real CI, not GH Actions; keep it, but don't prioritize) |
@@ -251,15 +251,45 @@ Given "a large number of plugins" is the stated goal, worth sizing this explicit
 once phase 2 (below) is done: each plugin here is roughly a half-day-to-multi-day
 integration+rebuild+verify cycle, not a values-file line.
 
-### Plugin #1 (ArgoCD) — code + GitOps done 2026-09-03, image not yet rebuilt
+### Plugin #1 (ArgoCD) — code + GitOps done 2026-09-03/04, image not yet rebuilt
 
-Both packages export the new frontend/backend systems natively at their currently
-pinned versions (`argocd-cd-backend@4.8.0`: single default `BackendFeature` export,
-no `/alpha` two-step the package's own README still shows for an older version;
-`argo-cd@2.12.5`: default export from `/alpha` is a full `FrontendPlugin` -
-overview/history entity cards + an entity-content page, all gated by default on
-`kind:component`). No compat-wrapper/legacy-plugin conversion needed, unlike a
-plugin that hasn't migrated to the new systems yet.
+**Switched plugins 2026-09-04, same day as the section below** - started with
+`@roadiehq/backstage-plugin-argo-cd(-backend)`, then the user asked for the fuller
+read feature set once they saw the basic card live: multi-app-per-entity via
+`argocd/app-selector`, multi-instance display via a comma-separated
+`argocd/instance-name`, and Argo Rollouts visualization. Landed on
+`@backstage-community/plugin-redhat-argocd(-backend)` for that - confirmed by
+reading its `router.cjs.js` directly that it's entirely read-only (4 `GET` routes,
+one Backstage permission `argocd.view.read`, no sync/rollback/delete anywhere) -
+"full feature set minus some write options" turned out to need zero permission-
+policy work, since this plugin never had write options to begin with. Same
+`argocd.appLocatorMethods` config shape as Roadie's, so the credentials/
+reachability work below (done for Roadie's plugin first) carried over unchanged.
+
+**One real integration wrinkle Roadie's plugin didn't have**: this plugin hasn't
+migrated to Backstage's new frontend system - its `/alpha` export is only
+translation refs, not a `FrontendPlugin` (confirmed by reading `alpha.esm.js`
+directly, not assumed from Roadie's own `/alpha` precedent). Bridged by hand in a
+new `packages/app/src/modules/argocd/index.tsx`, using `core-compat-api`'s
+`compatWrapper` around the plugin's two real components
+(`ArgocdDeploymentSummary`, `ArgocdDeploymentLifecycle`) - same bridging pattern
+this app already used for its sign-in page and theme overrides, just applied to a
+genuinely new plugin surface instead of an `app`-pluginId override. Filtered on
+`isArgocdConfigured` rather than a blanket `kind:component` (Roadie's own
+default): this plugin's components return `JSX.Element | null` and silently
+render nothing when unconfigured, with no `MissingAnnotationEmptyState`
+placeholder the way Roadie's cards had - mounting them everywhere would leave a
+bare layout gap instead.
+
+**Argo Rollouts visualization** needed two more additions beyond what Roadie's
+plugin needed: `kubernetes.customResources` in `app-config.yaml` (the `rollouts`/
+`analysisruns` CRD kinds) and a new explicit `backstage-argo-rollouts-viewer`
+ClusterRole + binding on kiac-dev/kiac-prod's own `backstage-ingestor-rbac`
+(`view` doesn't cover `argoproj.io` CRDs, same reasoning as the existing CRD-viewer
+and `crossplane-browse` grants) - not needed on kiac-man, which runs no Rollouts.
+
+Also enabled `argocd.fullDeploymentHistory: true` (off/deduped by this plugin's
+own default) per "full feature set."
 
 **Scoped to `argocd-apps` only, kiac-dev + kiac-prod only** (user's explicit call,
 not the default the plugin table above originally implied) - `argocd-apps` is the
