@@ -179,6 +179,32 @@ reported an IP change, or any time a `*.kiac.local` URL stops responding. Its
 gateway-routes READMEs it's sourced from — update all of them together if a new
 `HTTPRoute` is added.
 
+### `*.kiac.local` doesn't resolve inside a pod at all — a different gap
+
+`/etc/hosts` on the Mac host is invisible to pods running inside a kiac cluster's
+VMs — a pod's CoreDNS forwards anything it doesn't own straight to
+`/etc/resolv.conf`, it never consults the host machine's `/etc/hosts`. Anything
+running as a workload that needs to reach another cluster's `*.kiac.local` hostname
+needs its own fix, not just `refresh-kiac-hosts.sh`. Found and fixed three times so
+far (2026-09-04), all via a literal IP in a Kubernetes `hostAliases` entry rather
+than trying to make the hostname resolve in-cluster:
+
+- Backstage's Deployment (`kiac-man`) reaching ArgoCD/kube-apiserver on dev/prod.
+- external-secrets' controller (`kiac-man`, `kiac-prod`) reaching Infisical on
+  `kiac-dev`.
+- checkout-api's `platform-outcome-postsync`/`platform-outcome-syncfail` hook Jobs
+  (`kiac-prod`) reaching `argocd-outcome-relay` on `kiac-dev` —
+  `releaseTracking.relayHostAliasIP` in `idp-application`'s chart, resolved fresh
+  per release by `open-release-pr.yaml`'s own downward-API `status.hostIP` (that
+  Task's pod runs on the dev cluster itself, so it always knows dev's current IP
+  without needing DNS or `/etc/hosts` either).
+
+`refresh-kiac-hosts.sh` keeps the first two patched on every run; it also patches
+the third for any app whose `values.yaml` already has `relayHostAliasIP` set, to
+cover IP drift between releases (a real release re-bakes it fresh regardless). If a
+new workload needs the same cross-cluster reachability, it needs this same
+treatment, not just a `*.kiac.local` entry in `/etc/hosts`.
+
 ## See also
 
 - [[project_kiac_dev]] in memory — running incident log for kiac-dev/kiac-prod,
