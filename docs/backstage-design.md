@@ -442,6 +442,18 @@ every catalog entity now links via label-selector instead of single app-name, so
 every related Application shows, and the overwrite race is gone since every resource
 kind for the same app now computes the identical selector.
 
+**Refined 2026-09-05, same live testing session**: all 7 Applications rendering
+(workload + `-onboarding`/`-xr-requests`/`-appproject` infra apps) was more than the
+tab actually needs - user's call after seeing it live: the infra apps aren't part of
+the deployment flow the tab exists to show, just noise. Selector narrowed to
+`platform.io/app=<resource-name>,platform.io/env` - the added clause is a bare
+label-existence check (standard Kubernetes selector syntax), and `platform.io/env`
+is applied by `idp-application`'s chart only to the real per-environment workload
+Applications (`<app>-dev`/`-staging`/`-prod`), confirmed live absent from every
+infra app across both checkout-api and order-api. Now shows exactly the
+environment-progression view (e.g. checkout-api: dev, staging, prod) the tab is
+for.
+
 ## Image build — new platform-cicd surface
 
 Dropping RHDH means Backstage needs its own container image, rebuilt whenever the
