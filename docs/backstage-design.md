@@ -385,6 +385,63 @@ bumped before the plugin is actually live, plus the three manual steps (two Argo
 account tokens, `hostAliases` already has current-as-of-2026-09-03 IPs baked in but
 should be re-verified live at build/deploy time).
 
+### Two real bugs found live once the plugin actually rendered, 2026-09-04
+
+Neither was config - both needed a code fix in the `backstage` repo:
+
+1. **Routing crash on the ArgoCD tab** (`NotImplementedError`-adjacent: "Routable
+   extension component... was not discovered in the app element tree"). Root cause:
+   `ArgocdDeploymentSummary`/`ArgocdDeploymentLifecycle` are legacy
+   `createRoutableExtension` components bound to the plugin's own absolute
+   `rootRouteRef` - the new frontend system builds its route table by statically
+   scanning the declared extension tree, so a routable extension hidden behind
+   `compatWrapper` + a lazy loader needs that legacy routeRef explicitly re-bound via
+   `routeRef: convertLegacyRouteRef(argocdPlugin.routes.root)` on the hosting
+   `EntityContentBlueprint`. Fixed, then immediately hit...
+2. **`NotImplementedError: No implementation available for
+   apiRef{plugin.argo.cd.service}`**. The ArgoCD API client's `ApiFactory` is declared
+   on the legacy `argocdPlugin` object's own `createPlugin({apis: [...]})` call, not on
+   either component - `createFrontendPlugin` with just the two hand-picked extensions
+   never registered it. Fixed by switching to `convertLegacyPlugin(argocdPlugin, {
+   extensions: [...] })`, which bridges the legacy plugin's `apis`/`pluginId` while
+   still using this module's own hand-built extensions.
+
+### A third, bigger bug: `argocd/app-name` was wrong, and single-app anyway
+
+User tested with real data (checkout-api: 3 Applications on kiac-dev, 4 on
+kiac-prod, all legitimately part of the same app) and only 2 showed - one per
+cluster. Traced live via a direct query against the catalog's own postgres DB
+(`backstage_plugin_catalog.final_entities`, read through the pod's own
+`POSTGRES_PASSWORD_FILE` so no credential was ever seen or transmitted): the
+`checkout-api` entity's `argocd/app-name` annotation was `checkout-api-xr-requests`
+- the Bootstrap-tier onboarding app, not any of the real workload Applications. That
+exact app name happens to exist on both clusters, which is exactly "2 apps, one per
+cluster."
+
+Root cause, confirmed by reading `kubernetes-ingestor`'s `EntityProvider.cjs.js`
+directly: it ingests **two different Kubernetes resources into the same catalog
+entity ref** - the workload `Rollout` (tracked by `<app>-dev`/`-prod`) and the
+`NodeJSApplication` XR claim (tracked by `<app>-xr-requests`) both become
+`component:default/checkout-api`, and whichever resource this ingestion pass
+processes last silently overwrites the other's annotation. Even the "correct" single
+app-name would still only show one Application per cluster - `extractArgoAppName()`
+is hardcoded to emit `argocd/app-name`, never the multi-app `argocd/app-selector`,
+and there's no config knob for it.
+
+**Fixed via a yarn patch** (`.yarn/patches/@terasky-backstage-plugin-kubernetes-
+ingestor-*.patch`, same mechanism as the existing `terasky-utils` patch) - confirmed
+first that `platform.io/app=<name>` is a label idp-application's chart applies
+consistently to every workload AND every associated ArgoCD Application (checked live
+across checkout-api, order-api, search-api). `extractArgoAppName()` now derives that
+same `<name>` from the last path segment of ArgoCD's own `tracking-id` annotation
+(format `<app-name>:<group>/<kind>:<namespace>/<resource-name>` - `<resource-name>`
+is identical across every resource kind for a given app) and emits `argocd/app-
+selector: platform.io/app=<resource-name>` instead. This is a **fleet-wide behavior
+change** (user's explicit choice over a narrower "just fix the collision" patch) -
+every catalog entity now links via label-selector instead of single app-name, so
+every related Application shows, and the overwrite race is gone since every resource
+kind for the same app now computes the identical selector.
+
 ## Image build — new platform-cicd surface
 
 Dropping RHDH means Backstage needs its own container image, rebuilt whenever the
