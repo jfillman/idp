@@ -122,6 +122,22 @@ to proceed without the structural fix first, the plan still works — it just in
 the same "re-verify the IP against the live cluster, don't trust the committed value"
 discipline every existing consumer already needs.
 
+**RESOLVED, differently, 2026-09-04** — RHDH is off the table (see "Decisions made
+this round" above) so there's no `valuesObject` to wire IPs into any more; the actual
+consumer became `app-config.yaml`'s `kubernetes.clusterLocatorMethods` +
+`argocd.appLocatorMethods`. Neither "cluster-registry-driven lookup" nor
+"host-network-stable fronting" panned out as options once the kiac migration landed
+(kiac has no static-IP feature at all - confirmed upstream, `idp/docs/
+local-clusters.md` - so there's no stable per-cluster address a registry could even
+record). What shipped instead: `app-config.yaml` holds stable hostnames
+(`kube-apiserver.{dev,prod}.kiac.local`, `argocd-apps.{dev,prod}.kiac.local`) that
+never need editing again, and `gitops-cluster-kind-man/60-backstage/backstage/
+deployment.yaml`'s `hostAliases` is the ONE place that still needs a live IP
+re-verified after a kiac-dev/kiac-prod restart - centralizing the staleness this
+section worried about into a single, scriptable spot (`refresh-kiac-hosts.sh` now
+rewrites it) rather than eliminating the underlying VM-IP-churn problem, which isn't
+actually fixable at this layer.
+
 ## Credentials
 
 - **Read-only K8s ServiceAccount token per cluster** (`kind-dev`, `kind-prod`,
@@ -213,7 +229,7 @@ is a first slice, not final.
 
 | # | Plugin | Package (verify exact name at implementation time) | New credential needed? |
 |---|---|---|---|
-| 1 | ArgoCD | `backstage-community`/`@roadiehq` ArgoCD plugin | read-only API token per ArgoCD instance (kind-dev, kind-prod) |
+| 1 | ArgoCD | **Code done 2026-09-03** (`@roadiehq/backstage-plugin-argo-cd` + `-backend`, confirmed exact package name at implementation time - not `backstage-community`'s) | read-only API token per ArgoCD instance - **kiac-dev's and kiac-prod's `argocd-apps` instance only**, not `argocd` (platform) or kiac-man's own two - see below |
 | 2 | Kubernetes topology | `@backstage/plugin-kubernetes` + `@backstage-community/plugin-topology` | read-only K8s creds per cluster (already decided) |
 | 3 | GitHub pull requests | official `@backstage/plugin-github-pull-requests-board`-family | existing GitHub App (below) |
 | 4 | GitHub Actions | official `@backstage/plugin-github-actions` | existing GitHub App — low first-pass value here (platform-cicd/Tekton is this fleet's real CI, not GH Actions; keep it, but don't prioritize) |
@@ -234,6 +250,62 @@ per §0) is the fallback, not a blocker — just don't assume #7 is free to use 
 Given "a large number of plugins" is the stated goal, worth sizing this explicitly
 once phase 2 (below) is done: each plugin here is roughly a half-day-to-multi-day
 integration+rebuild+verify cycle, not a values-file line.
+
+### Plugin #1 (ArgoCD) — code + GitOps done 2026-09-03, image not yet rebuilt
+
+Both packages export the new frontend/backend systems natively at their currently
+pinned versions (`argocd-cd-backend@4.8.0`: single default `BackendFeature` export,
+no `/alpha` two-step the package's own README still shows for an older version;
+`argo-cd@2.12.5`: default export from `/alpha` is a full `FrontendPlugin` -
+overview/history entity cards + an entity-content page, all gated by default on
+`kind:component`). No compat-wrapper/legacy-plugin conversion needed, unlike a
+plugin that hasn't migrated to the new systems yet.
+
+**Scoped to `argocd-apps` only, kiac-dev + kiac-prod only** (user's explicit call,
+not the default the plugin table above originally implied) - `argocd-apps` is the
+instance that actually deploys each tenant's `Application` (gitops-strategy.md §2),
+matching catalog Components 1:1; the `argocd` platform instance and kiac-man's own
+two instances have no catalog entity to attach a card to.
+
+**No per-entity annotation work needed** - `kubernetes-ingestor`'s `argoIntegration`
+config defaults to `true` and already emits the exact `argocd/app-name` annotation
+this plugin reads (confirmed by grepping the installed package's own compiled
+source, not assumed from either plugin's docs), onto every entity it generates from
+a resource owned by an ArgoCD Application. Once `kubernetesIngestor` catalog
+ingestion is live against kiac-dev/kiac-prod (Phase 5, see "Rollout phases" below -
+worth re-confirming this is actually still working post-kiac-migration, given the
+IP-churn note next), the ArgoCD cards populate automatically.
+
+**Reachability fixed via Gateway hostnames, not raw IPs** (user's explicit call,
+over matching the existing `kubernetes.clusterLocatorMethods` fragile-IP pattern) -
+`app-config.yaml`'s `argocd.appLocatorMethods` instance URLs are the stable
+`argocd-apps.{dev,prod}.kiac.local` hostnames and never need editing again; only
+`gitops-cluster-kind-man/60-backstage/backstage/deployment.yaml`'s `hostAliases`
+(the Backstage pod's own DNS resolution for those two hostnames) needs re-pointing
+at the clusters' current VM IPs after a kiac-dev/kiac-prod restart - same
+live-reverify discipline as everything else kiac's no-static-IP limitation
+touches (`idp/docs/local-clusters.md`). `refresh-kiac-hosts.sh` now also rewrites
+`hostAliases` in the local `gitops-cluster-kind-man` checkout when it heals
+`/etc/hosts` - one command, one source of truth (`container list`) for both. It
+deliberately does NOT `kubectl patch` the live Deployment: that Application runs
+`selfHeal: true`, so a live patch would just get reverted on ArgoCD's next
+reconcile (confirmed by reading that Application's own sync policy) - the durable
+fix has to go through git, same as everything else this platform manages. The
+script stops at rewriting the file; committing/pushing is still a manual step.
+
+**Credentials**: a dedicated `backstage` ArgoCD account (`apiKey` capability only,
+bound to the built-in `role:readonly`) added to each cluster's `argocd-apps-install/
+application.yaml` (`configs.cm`/`configs.rbac`). Token itself is manual-by-design,
+same posture as every other credential here - see `gitops-cluster-kind-man/
+60-backstage/backstage/argocd-{dev,prod}-apps-token-external-secret.yaml`'s own
+header comments for the exact `argocd login`/`account generate-token` steps and
+which Infisical key each one plants into.
+
+**Not yet done**: the running Backstage image (`1.0.1-1e3c7fa`) predates this code -
+needs a real CI build (push to the backstage repo) and `deployment.yaml`'s image tag
+bumped before the plugin is actually live, plus the three manual steps (two ArgoCD
+account tokens, `hostAliases` already has current-as-of-2026-09-03 IPs baked in but
+should be re-verified live at build/deploy time).
 
 ## Image build — new platform-cicd surface
 
